@@ -1,0 +1,21 @@
+# ===== IDE / Workspace =====
+.metadata/
+.recommenders/
+.vscode/
+.idea/
+
+# ===== Java / Spring Boot =====
+**/target/
+**/*.log
+**/.classpath
+**/.project
+**/.settings/
+
+# ===== Node / React =====
+**/node_modules/
+**/dist/
+**/build/
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
