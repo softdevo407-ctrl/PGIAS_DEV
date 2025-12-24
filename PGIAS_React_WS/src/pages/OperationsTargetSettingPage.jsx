@@ -5,10 +5,37 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Edit, Trash2, CheckCircle, ChevronDown, ChevronRight, X, Search, Loader, AlertCircle } from 'lucide-react';
 import CreatableSelect from 'react-select/creatable';
 
+// Add pulse animation for highlighted buttons
+const pulseStyle = `
+  @keyframes pulse {
+    0% {
+      box-shadow: 0 0 8px rgba(40, 167, 69, 0.6);
+    }
+    50% {
+      box-shadow: 0 0 16px rgba(40, 167, 69, 0.8);
+    }
+    100% {
+      box-shadow: 0 0 8px rgba(40, 167, 69, 0.6);
+    }
+  }
+`;
+
+// Inject styles into document head
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.textContent = pulseStyle;
+  document.head.appendChild(style);
+}
+
 const OperationsTargetSettingPage = () => {
   // State Management
   const [operation, setOperation] = useState('TARGET_SETTING');
-  const [selectedFY, setSelectedFY] = useState('FY2024-25');
+  const [selectedFY, setSelectedFY] = useState('2026-2027');
+  const [centrecode, setCentrecode] = useState(''); // Will be populated from user roles/permissions
+  const [userRoles, setUserRoles] = useState([]); // Roles assigned to user
+  const [userid, setUserid] = useState('USER001'); // Default user ID (can be fetched from session/context)
+  const [assignedCentre, setAssignedCentre] = useState(null);
+  const [centres, setCentres] = useState([]);
   const [objectives, setObjectives] = useState([]);
   const [actions, setActions] = useState({});
   const [successIndicators, setSuccessIndicators] = useState({});
@@ -38,9 +65,26 @@ const OperationsTargetSettingPage = () => {
     { id: 'FY2022-23', name: 'FY 2022-23' }
   ];
 
-  // Fetch Objectives on component mount
+  // Get dynamic financial year based on operation type
+  // TARGET_SETTING: Next financial year (2026-2027)
+  // TARGET_ACHIEVED: Current year (2025-2026)
+  const getDynamicFY = (op) => {
+    if (op === 'TARGET_SETTING') {
+      return '2026-2027'; // Next financial year for target setting
+    } else {
+      return '2025-2026'; // Current year for achievement
+    }
+  };
+
+  // Update selectedFY whenever operation changes
+  useEffect(() => {
+    setSelectedFY(getDynamicFY(operation));
+  }, [operation]);
+
+  // Fetch Objectives and user roles on component mount
   useEffect(() => {
     fetchObjectives();
+    initializeUserFromLocalStorage();
     // Initialize Bootstrap tooltips
     if (window.$ && window.$.fn.tooltip) {
       window.$('[data-toggle="tooltip"]').tooltip({
@@ -50,6 +94,51 @@ const OperationsTargetSettingPage = () => {
       });
     }
   }, []);
+
+  // Initialize user data from localStorage (set by App.jsx on login)
+  const initializeUserFromLocalStorage = () => {
+    try {
+      // Read loginId and centreCode set by App.jsx during authentication
+      const loginId = localStorage.getItem('loginId');
+      const centreCodeFromStorage = localStorage.getItem('centreCode');
+
+      // Set userid to loginId
+      setUserid(loginId);
+      setAssignedCentre(centreCodeFromStorage);
+
+      // Normalize centre assignment: if 'All' or 'ALL', allow selection; otherwise pre-fill
+      if (String(centreCodeFromStorage).toUpperCase() === 'ALL') {
+        setCentrecode(''); // Allow user to select
+      } else {
+        setCentrecode(centreCodeFromStorage);
+      }
+
+      console.log('👤 Initialized from localStorage - User:', loginId, '| Centre:', centreCodeFromStorage);
+      
+      // Fetch centres list for dropdown (in case user assigned to 'ALL')
+      fetchCentres();
+    } catch (err) {
+      console.error('Failed to initialize user from localStorage:', err);
+      setUserid('USER001');
+      setCentrecode('01');
+    }
+  };
+
+  // Fetch all centres from backend
+  // API returns: { centrecode, centrelongname, centreshortname, ... }
+  const fetchCentres = async () => {
+    try {
+      const res = await fetch('http://localhost:8080/api/centres');
+      if (!res.ok) throw new Error('Failed to fetch centres');
+      const data = await res.json();
+      console.log('✅ Fetched Centres:', data);
+      // Centres array with fields: centrecode (lowercase), centreshortname, centrelongname
+      setCentres(data || []);
+    } catch (err) {
+      console.error('Failed to load centres:', err);
+      setCentres([]);
+    }
+  };
 
   // When objectives load, create rows for each objective
   useEffect(() => {
@@ -113,16 +202,18 @@ const OperationsTargetSettingPage = () => {
         // For single-entry objectives, populate the first row with default action
         objectives.forEach(obj => {
           const isMultiEntry = obj.multipleentries === 'Yes';
-          
-          const availableActions = (actions[obj.objectivecode] || []).filter(a => !a.actioncode.includes('XX'));
-          
-          // Update existing rows with default action code if empty
-          for (let row of updated) {
-            if (row.objectCode === obj.objectivecode && !row.actionCode && availableActions.length > 0) {
-              const defaultAction = availableActions[0];
-              row.actionCode = defaultAction.actioncode;
-              row.actionName = defaultAction.actiondescription;
-              fetchSuccessIndicators(row.objectCode, defaultAction.actioncode);
+
+          // Only auto-select default action for SINGLE-ENTRY objectives (multipleEntries === 'No')
+          if (!isMultiEntry) {
+            const availableActions = (actions[obj.objectivecode] || []).filter(a => !a.actioncode.includes('XX'));
+            // Update existing rows with default action code if empty
+            for (let row of updated) {
+              if (row.objectCode === obj.objectivecode && !row.actionCode && availableActions.length > 0) {
+                const defaultAction = availableActions[0];
+                row.actionCode = defaultAction.actioncode;
+                row.actionName = defaultAction.actiondescription;
+                fetchSuccessIndicators(row.objectCode, defaultAction.actioncode);
+              }
             }
           }
         });
@@ -158,6 +249,17 @@ const OperationsTargetSettingPage = () => {
       });
     }
   }, [objectives, selectedFY]);
+
+  // Fetch Success Indicators for ALL objectives when objectives load
+  // This makes SI dropdown always available without depending on action code selection
+  useEffect(() => {
+    if (objectives.length > 0) {
+      console.log('🔄 Fetching Success Indicators for all objectives...');
+      objectives.forEach(obj => {
+        fetchSuccessIndicators(obj.objectivecode);  // Fetch for objective only, no actionCode
+      });
+    }
+  }, [objectives]);
 
   // Update Bootstrap tooltips when error state changes
   useEffect(() => {
@@ -323,24 +425,32 @@ const OperationsTargetSettingPage = () => {
     }
   };
 
-  // Fetch Success Indicators from: http://localhost:8080/api/successindicator/{objectcode}/{actioncode}
-  const fetchSuccessIndicators = async (objectCode, actionCode) => {
+  // Fetch Success Indicators from: http://localhost:8080/api/successindicator/success/{objectcode}
+  // SUCCESS INDICATORS ARE NOW FETCHED DIRECTLY FOR EACH OBJECTIVE - NO LONGER DEPENDENT ON ACTION CODE
+  const fetchSuccessIndicators = async (objectCode, actionCode = null) => {
     try {
       const response = await fetch(`http://localhost:8080/api/successindicator/success/${objectCode}`);
       if (!response.ok) throw new Error('Failed to fetch success indicators');
       const data = await response.json();
-      console.log(`Fetched Success Indicators for ${objectCode} + ${actionCode}:`, data);
-      const key = `${objectCode}_${actionCode}`;
+      console.log(`✅ Fetched Success Indicators for Objective ${objectCode}:`, data);
+      
+      // Store by objectCode only (universal for all actions in this objective)
+      const key = objectCode;  // Changed from objectCode_actionCode to just objectCode
       setSuccessIndicators(prev => ({
         ...prev,
         [key]: data
       }));
       
-      // Total weight will be calculated from saved row values, not from initial SI data
-      // Store success indicators first, weight calculation happens when rows are saved
+      // Also store by objectCode_actionCode format for backward compatibility with existing logic
+      if (actionCode) {
+        setSuccessIndicators(prev => ({
+          ...prev,
+          [`${objectCode}_${actionCode}`]: data
+        }));
+      }
     } catch (err) {
       console.error('Failed to fetch success indicators:', err);
-      const key = `${objectCode}_${actionCode}`;
+      const key = objectCode;
       setSuccessIndicators(prev => ({
         ...prev,
         [key]: []
@@ -380,6 +490,101 @@ const OperationsTargetSettingPage = () => {
     } catch (err) {
       console.error('Failed to fetch weight:', err);
       return null;
+    }
+  };
+
+  // Fetch saved rows for selected centre and financial year
+  // This loads any previously saved data for the current centre/FY combination
+  const fetchSavedRowsForCentre = async (centre, fy) => {
+    try {
+      if (!centre) {
+        console.log('❌ No centre provided, skipping fetch');
+        return [];
+      }
+      
+      console.log(`🔍 API Call: GET /api/targets?centrecode=${centre}&financialyear=${fy}`);
+      const response = await fetch(`http://localhost:8080/api/targets?centrecode=${centre}&financialyear=${fy}`);
+      
+      if (!response.ok) {
+        console.warn(`⚠️ API returned status ${response.status} for centre ${centre}`);
+        return [];
+      }
+      
+      const data = await response.json();
+      console.log(`📦 API Response:`, data);
+      console.log(`✅ Found ${Array.isArray(data) ? data.length : 0} saved rows for centre ${centre}`);
+      
+      // Map saved data to rows state
+      if (!Array.isArray(data) || data.length === 0) {
+        console.log(`ℹ️ No data returned - empty array or not array`);
+        return [];
+      }
+      
+      const savedRows = data.map((item, idx) => {
+        // Determine weight type based on unit field
+        let weightType = 'NUMBER'; // default
+        if (item.unit === 'Date' || item.unit === 'DATE') {
+          weightType = 'DATE';
+        } else if (item.unit === 'Percentage' || item.unit === 'PERCENTAGE' || item.validforpercentage === 'Yes') {
+          weightType = 'PERCENTAGE';
+        }
+        
+        // Get objective metadata to determine if multipleEntries
+        const objective = objectives.find(obj => obj.objectivecode === item.objectivecode);
+        const isMultipleEntries = objective?.multipleentries === 'Yes';
+        
+        const mappedRow = {
+          id: `saved_${item.objectivecode}_${item.actioncode}_${item.successindicatorcode}`,
+          objectCode: item.objectivecode,
+          objectDescription: item.objectivedescription || '',
+          mandatory: objective?.mandatory || '',
+          multipleEntries: isMultipleEntries,
+          predefinedParameters: objective?.predefinedparameters === 'Yes' || false,
+          predefinedReferenceValues: objective?.predefinedreferencevalues === 'Yes' || false,
+          changeInTargetCriteria: objective?.changeintargetcriteria === 'Yes' || false,
+          predefinedActions: objective?.predefinedactions === 'Yes' || false,
+          weightPeriod: objective?.weightperinitofactivity || '',
+          unit: item.unit || '',
+          unitPreferred: 'Default',
+          actionCode: item.actioncode,
+          actionName: item.actiondescription || '',
+          successIndicatorCode: item.successindicatorcode,
+          siName: item.successindicatordescription || '',
+          siDescription: item.successindicatordescription || '',
+          weightInfo: null,
+          selectedWeightType: weightType,  // Now correctly set based on unit
+          weightValue: item.weightperunitofactivity ? { value: item.weightperunitofactivity, unit: '' } : null,
+          excellent: item.targetcriteriavalueexcellent || '',
+          veryGood: item.targetcriteriavalueverygood || '',
+          good: item.targetcriteriavaluegood || '',
+          fair: item.targetcriteriavaluefair || '',
+          poor: item.targetcriteriavaluepoor || '',
+          isEditing: false,
+          isSaved: true,
+          hasChanges: false,
+          originalValues: null,
+          weightperunitofactivity: item.weightperunitofactivity || 0
+        };
+        
+        console.log(`  📍 Row ${idx + 1}: ${mappedRow.objectCode} | Action: ${mappedRow.actionCode} | SI: ${mappedRow.successIndicatorCode} | MultipleEntries: ${mappedRow.multipleEntries} | Excellent: ${mappedRow.excellent}`);
+        
+        return mappedRow;
+      });
+      
+      // Auto-expand objectives that have saved rows
+      const objectsWithSavedRows = new Set(savedRows.map(r => r.objectCode));
+      setExpandedObjectives(prev => {
+        const updated = { ...prev };
+        objectsWithSavedRows.forEach(objCode => {
+          updated[objCode] = true;  // Expand objective
+        });
+        return updated;
+      });
+      
+      return savedRows;
+    } catch (err) {
+      console.error(`❌ Error fetching saved rows for centre ${centre}:`, err);
+      return [];
     }
   };
 
@@ -485,40 +690,75 @@ const OperationsTargetSettingPage = () => {
     }
   };
 
-  // Save Row to Backend: POST http://localhost:8080/api/target-setting
+  // Save Row to Backend: POST http://localhost:8080/api/targets
   const saveRowToBackend = async (row) => {
     try {
+      // Use selected financial year string as-is (format: 2026-2027)
+      const fyYear = selectedFY;
+
+      // Find centre short name from loaded centres
+      const selectedCentreObj = centres.find(c => c.centrecode === centrecode) || null;
+
+      // Build the complete payload matching the database table structure
       const payload = {
-        financialYear: selectedFY,
-        objectCode: row.objectCode,
-        actionCode: row.actionCode,
-        successIndicatorCode: row.successIndicatorCode,
-        weightInfo: row.weightInfo,
-        selectedWeightType: row.selectedWeightType,
-        excellent: row.excellent,
-        veryGood: row.veryGood,
-        good: row.good,
-        fair: row.fair,
-        poor: row.poor,
-        status: 'SAVED'
+        financialyear: fyYear,
+        centrecode: centrecode,
+        centreshortname: selectedCentreObj ? selectedCentreObj.centreshortname : '',
+        objectivecode: row.objectCode,
+        objectivedescription: row.objectDescription || '',
+        actioncode: row.actionCode,
+        actiondescription: row.actionName || '',
+        successindicatorcode: row.successIndicatorCode,
+        successindicatordescription: row.siName || '',
+        unit: row.unit || '',
+        targetsetvalue: row.excellent || '', // Primary target is Excellent
+        weightperunitofactivity: row.weightValue?.value || 0,
+        targetcriteriavalueexcellent: row.excellent || '',
+        targetcriteriavalueverygood: row.veryGood || '',
+        targetcriteriavaluegood: row.good || '',
+        targetcriteriavaluefair: row.fair || '',
+        targetcriteriavaluepoor: row.poor || '',
+        achievementstatuscode: null,
+        achievementstatusdescription: null,
+        validforpercentage: row.selectedWeightType === 'PERCENTAGE' ? 'Yes' : 'No',
+        targetvalueachieved: null,
+        achievementweightperunitofactivity: null,
+        actualachievementpercentage: null,
+        statuscode: 'T01',
+        statusdescription: 'Target Setting',
+        remarksofcentres: '',
+        remarksofhqorapexcommittee: '',
+        centrelevelapproveduserid: null,
+        departmentlevelapproveduserid: null,
+        userid: userid,
+        regstatus: 'A', // Active
+        regtime: new Date().toISOString()
       };
 
       console.log('📝 Row payload to save:', payload);
       
-      // Once API is ready, uncomment below to POST to backend:
-      /*
-      const response = await fetch('http://localhost:8080/api/target-setting', {
+      // Call the backend API to save
+      const response = await fetch('http://localhost:8080/api/targets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      if (!response.ok) throw new Error('Failed to save row');
-      const result = await response.json();
-      return "Saved Successfully";
-      */
       
-      // For now, just return success (API endpoint will be added)
-      return "Row saved (API endpoint pending)";
+      if (!response.ok) {
+        let errorMessage = 'Failed to save row';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+      
+      const result = await response.json();
+      console.log('✅ Row saved successfully:', result);
+      return "Row saved successfully";
     } catch (err) {
       throw new Error('Error saving row: ' + err.message);
     }
@@ -549,9 +789,12 @@ const OperationsTargetSettingPage = () => {
 
   // Handle success indicator selection
   const handleSIChange = (rowId, objectCode, actionCode, siCode) => {
-    const key = `${objectCode}_${actionCode}`;
-    // successindicatorcode is a direct property in the flat API response
-    const si = successIndicators[key]?.find(s => s.successindicatorcode === siCode);
+    // Look up SI using just objectCode (SI data is now fetched independently of action code)
+    const si = successIndicators[objectCode]?.find(s => s.successindicatorcode === siCode);
+    
+    // Check if this objective allows multiple entries
+    const objective = objectives.find(obj => obj.objectivecode === objectCode);
+    const isMultipleEntries = objective?.multipleentries === 'Yes';
     
     setRows(rows.map(row =>
       row.id === rowId
@@ -560,13 +803,12 @@ const OperationsTargetSettingPage = () => {
             successIndicatorCode: siCode,  // Store CODE
             siName: si?.successindicatordescription || '',  // Display DESCRIPTION
             siDescription: si?.successindicatordescription || '',
-            // Don't auto-populate performance levels - let user enter manually
-            // Keep empty so user can enter their own values
-            excellent: '',
-            veryGood: '',
-            good: '',
-            fair: '',
-            poor: '',
+            // For multiple entries: Load default values from SI; for single-entry: let user enter
+            excellent: isMultipleEntries ? (si?.targetcriteriavalueexcellent || '') : '',
+            veryGood: isMultipleEntries ? (si?.targetcriteriavalueverygood || '') : '',
+            good: isMultipleEntries ? (si?.targetcriteriavaluegood || '') : '',
+            fair: isMultipleEntries ? (si?.targetcriteriavaluefair || '') : '',
+            poor: isMultipleEntries ? (si?.targetcriteriavaluepoor || '') : '',
             weightValue: null  // Reset weight value, will be fetched
           }
         : row
@@ -618,6 +860,16 @@ const OperationsTargetSettingPage = () => {
 
   // Save row to backend and freeze it
   const saveRow = async (row) => {
+    // Validate centre is selected
+    if (!centrecode || centrecode.trim() === '') {
+      setTooltipError({
+        rowId: row.id,
+        field: 'centrecode',
+        message: '⚠️ Please select a centre before saving'
+      });
+      return;
+    }
+    
     // Validate mandatory fields
     if (!row.objectCode || !row.actionCode || !row.successIndicatorCode) {
       let missingField = 'objectCode';
@@ -698,10 +950,65 @@ const OperationsTargetSettingPage = () => {
     }
   };
 
+  // Delete Row from Backend: POST http://localhost:8080/api/targets/delete
+  const deleteRowFromBackend = async (row) => {
+    try {
+      const fyYear = selectedFY.replace('FY', '').replace('-', '/'); // Convert FY2024-25 to 2024/25
+      
+      // Build the composite ID that matches the database primary key
+      const id = {
+        financialyear: fyYear,
+        centrecode: centrecode,
+        objectivecode: row.objectCode,
+        actioncode: row.actionCode,
+        successindicatorcode: row.successIndicatorCode
+      };
+
+      console.log('🗑️ Deleting row with ID:', id);
+      
+      const response = await fetch('http://localhost:8080/api/targets/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(id)
+      });
+      
+      if (!response.ok) {
+        let errorMessage = 'Failed to delete row';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+      
+      console.log('✅ Row deleted successfully');
+      return "Row deleted successfully";
+    } catch (err) {
+      throw new Error('Error deleting row: ' + err.message);
+    }
+  };
+
   // Show confirmation dialog before deleting a row
   const requestDeleteRow = (rowId) => {
+    const row = rows.find(r => r.id === rowId);
+    if (!row) return;
+    
     if (window.confirm('Are you sure you want to delete this entry?')) {
-      setRows(rows.filter(r => r.id !== rowId));
+      setLoading(true);
+      deleteRowFromBackend(row)
+        .then(() => {
+          setRows(rows.filter(r => r.id !== rowId));
+          alert('✅ Row deleted successfully!');
+        })
+        .catch(err => {
+          alert('❌ Error: ' + err.message);
+        })
+        .finally(() => {
+          setLoading(false);
+        });
     }
   };
 
@@ -796,10 +1103,61 @@ const OperationsTargetSettingPage = () => {
     return objective && objective.multipleentries === 'Yes';
   };
 
+  // Format date to dd/mm/yyyy
+  const formatDateDDMMYYYY = (dateStr) => {
+    if (!dateStr) return '';
+    try {
+      const date = new Date(dateStr + 'T00:00:00');
+      if (isNaN(date.getTime())) return dateStr;  // Return original if invalid
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      return `${day}/${month}/${year}`;
+    } catch (e) {
+      return dateStr;  // Return original on error
+    }
+  };
+
   // Render input field based on selected weight type
   const renderWeightInput = (row, field) => {
     const value = row[field];
     const weightType = row.selectedWeightType || 'NUMBER';  // Use selectedWeightType, not weightInfo
+    const isDisabled = isCentreLocked();
+    
+    // Check if this is a single-entry objective (multipleentries = 'No')
+    const isSingleEntry = !row.multipleEntries;  // multipleEntries = false means single-entry
+    
+    // AFTER SAVING: All fields are disabled (frozen) until Edit is clicked
+    if (row.isSaved && !row.isEditing) {
+      // For DATE type: show formatted date, otherwise show value as-is
+      const displayValue = weightType === 'DATE' ? formatDateDDMMYYYY(value) : value;
+      return (
+        <small className="text-muted">
+          {displayValue !== null && displayValue !== '' ? displayValue : '-'}
+        </small>
+      );
+    }
+    
+    // Performance level fields logic:
+    // NEW entries (not saved yet): ALWAYS ENABLED
+    // SAVED entries: 
+    //   - Single-entry: ALWAYS ENABLED (even when not editing)
+    //   - Multi-entry: DISABLED until SI selected (unless editing, then check SI)
+    let isPerformanceFieldDisabled = false;
+    
+    if (row.isSaved && !row.isEditing) {
+      // Saved row, not in edit mode: DISABLED for all
+      isPerformanceFieldDisabled = true;
+    } else if (!row.isSaved) {
+      // New/fresh entry: ALWAYS ENABLED
+      isPerformanceFieldDisabled = false;
+    } else if (row.isSaved && row.isEditing) {
+      // Editing a saved row: Enable based on objective type
+      isPerformanceFieldDisabled = isSingleEntry ? false : (!row.successIndicatorCode || isDisabled);
+    } else {
+      // Multi-entry, not saved yet, SI required
+      isPerformanceFieldDisabled = isSingleEntry ? false : (!row.successIndicatorCode || isDisabled);
+    }
 
     // Field labels for placeholders
     const fieldLabels = {
@@ -813,20 +1171,14 @@ const OperationsTargetSettingPage = () => {
     // For DATE type: date picker only, no manual text entry
     if (weightType === 'DATE') {
       return (
-        <div>
-          {row.isEditing ? (
-            <input 
-              type="date" 
-              className="form-control form-control-sm" 
-              value={value} 
-              onChange={(e) => handleFieldChange(row.id, field, e.target.value)}
-              placeholder={fieldLabels[field] || 'Select date'}
-              style={{cursor: 'pointer', color: value ? '#000' : '#999', fontSize: '0.7rem', padding: '0.2rem'}}
-            />
-          ) : (
-            <small className="text-muted">{value || '-'}</small>
-          )}
-        </div>
+        <input 
+          type="date" 
+          className="form-control form-control-sm" 
+          value={value || ''} 
+          onChange={(e) => handleFieldChange(row.id, field, e.target.value)}
+          disabled={isPerformanceFieldDisabled}
+          style={{fontSize: '0.7rem', padding: '0.2rem'}}
+        />
       );
     } else if (weightType === 'PERCENTAGE') {
       return (
@@ -838,7 +1190,8 @@ const OperationsTargetSettingPage = () => {
           placeholder={fieldLabels[field] || '0-100%'}
           value={value} 
           onChange={(e) => handleFieldChange(row.id, field, e.target.value)}
-          disabled={!row.isEditing}
+          disabled={isPerformanceFieldDisabled}
+          title={isPerformanceFieldDisabled ? (isSingleEntry ? '' : 'Select Success Indicator first to enable') : ''}
         />
       );
     } else {
@@ -849,7 +1202,8 @@ const OperationsTargetSettingPage = () => {
           placeholder={fieldLabels[field] || 'Enter value'}
           value={value} 
           onChange={(e) => handleFieldChange(row.id, field, e.target.value)}
-          disabled={!row.isEditing}
+          disabled={isPerformanceFieldDisabled}
+          title={isPerformanceFieldDisabled ? (isSingleEntry ? '' : 'Select Success Indicator first to enable') : ''}
         />
       );
     }
@@ -877,72 +1231,18 @@ const OperationsTargetSettingPage = () => {
     return objective && objective.multipleentries === 'No';
   };
 
-  // Validate performance levels - only if 2 or more values are entered
+  // Validate performance levels - ONLY Excellent is MANDATORY
   const validatePerformanceLevels = (row) => {
-    const performanceLevels = [
-      { name: 'Excellent', value: row.excellent, key: 'excellent' },
-      { name: 'Very Good', value: row.veryGood, key: 'veryGood' },
-      { name: 'Good', value: row.good, key: 'good' },
-      { name: 'Fair', value: row.fair, key: 'fair' },
-      { name: 'Poor', value: row.poor, key: 'poor' }
-    ];
-
-    // Count how many fields have values
-    const enteredLevels = performanceLevels.filter(level => level.value !== null && level.value !== '');
-
-    // Only validate if 2 or more values are entered
-    if (enteredLevels.length < 2) {
-      return { isValid: true };
+    // Check ONLY if Excellent is filled
+    if (!row.excellent && row.excellent !== 0) {
+      return {
+        isValid: false,
+        field: 'excellent',
+        message: '📊 Excellent is MANDATORY'
+      };
     }
 
-    const weightType = row.selectedWeightType || 'NUMBER';
-
-    // For DATE type: dates should be in ascending order (Excellent < Very Good < Good < Fair < Poor)
-    // Meaning Excellent date is earliest, Poor date is latest
-    if (weightType === 'DATE') {
-      for (let i = 0; i < performanceLevels.length - 1; i++) {
-        const current = performanceLevels[i];
-        const next = performanceLevels[i + 1];
-
-        // Skip if current is empty
-        if (!current.value) continue;
-
-        // If next has value, compare - current date MUST be LESS THAN next date
-        if (next.value) {
-          if (new Date(current.value) >= new Date(next.value)) {
-            return { 
-              isValid: false,
-              field: next.key,
-              message: `📅 ${next.name} must be a LATER date than ${current.name}` 
-            };
-          }
-        }
-      }
-    } else {
-      // For NUMBER and PERCENTAGE: values should be in descending order (Excellent > Very Good > Good > Fair > Poor)
-      for (let i = 0; i < performanceLevels.length - 1; i++) {
-        const current = performanceLevels[i];
-        const next = performanceLevels[i + 1];
-
-        // Skip if current is empty
-        if (!current.value && current.value !== 0) continue;
-
-        // If next has value, compare
-        if (next.value || next.value === 0) {
-          const currentNum = parseFloat(current.value);
-          const nextNum = parseFloat(next.value);
-
-          if (currentNum <= nextNum) {
-            return { 
-              isValid: false,
-              field: next.key,
-              message: `📊 ${next.name} (${nextNum}) must be LOWER than ${current.name} (${currentNum})` 
-            };
-          }
-        }
-      }
-    }
-
+    // Everything else is optional - SAVE
     return { isValid: true };
   };
 
@@ -950,6 +1250,23 @@ const OperationsTargetSettingPage = () => {
   const getLastRowForObjective = (objectCode) => {
     const objRows = rows.filter(r => r.objectCode === objectCode);
     return objRows.length > 0 ? objRows[objRows.length - 1] : null;
+  };
+
+  // Check if centre is locked (selected and not empty)
+  const isCentreLocked = () => {
+    return centrecode && centrecode.trim() !== '';
+  };
+
+  // Check if an objective is restricted to HQ only
+  const isObjectiveRestrictedToHQ = (mandatory) => {
+    return mandatory === 'HQ';
+  };
+
+  // Check if current centre is HQ
+  const isCurrentCentreHQ = () => {
+    if (!centrecode) return false;
+    return centrecode === '13' || 
+      (centres.find(c => c.centrecode === centrecode)?.centreshortname === 'HQ');
   };
 
   return (
@@ -962,52 +1279,132 @@ const OperationsTargetSettingPage = () => {
         </div>
       </div>
 
+  
+
       {/* ===== ERROR & LOADING MESSAGES ===== */}
       {error && <div className="alert alert-danger alert-dismissible fade show"><strong>Error:</strong> {error}</div>}
       {loading && <div className="alert alert-info"><div className="spinner-border spinner-border-sm me-2"></div>Loading data...</div>}
 
-      {/* ===== OPERATION & FINANCIAL YEAR SELECTION ===== */}
-      <div className="card border-0 shadow-sm mb-4">
-        <div className="card-header bg-primary text-white">
-          <h5 className="mb-0">📋 Operation & Period Selection</h5>
+      {/* ===== OPERATION & PERIOD SELECTION ===== */}
+      <div className="row g-2 mb-4 align-items-end">
+        <div className="col-md-5">
+          <label className="form-label fw-semibold mb-2">📋 Select Operation *</label>
+          <div className="btn-group w-100" role="group">
+            <input type="radio" className="btn-check" name="operation" id="targetSetting" value="TARGET_SETTING" checked={operation === 'TARGET_SETTING'} onChange={(e) => setOperation(e.target.value)} />
+            <label className="btn btn-outline-primary fw-semibold" htmlFor="targetSetting" style={{fontSize: '0.9rem', padding: '0.4rem 0.8rem'}}>
+              🎯 Target Setting (2026-2027)
+            </label>
+            
+            <input type="radio" className="btn-check" name="operation" id="targetAchieved" value="TARGET_ACHIEVED" onChange={(e) => setOperation(e.target.value)} disabled />
+            <label className="btn btn-outline-secondary fw-semibold disabled" htmlFor="targetAchieved" style={{fontSize: '0.9rem', padding: '0.4rem 0.8rem'}}>
+              ✅ Target Achieved (2025-2026)
+            </label>
+          </div>
         </div>
-        <div className="card-body">
-          <div className="row g-3">
-            <div className="col-md-6">
-              <label className="form-label fw-semibold">Select Operation *</label>
-              <div className="btn-group w-100" role="group">
-                <input type="radio" className="btn-check" name="operation" id="targetSetting" value="TARGET_SETTING" checked={operation === 'TARGET_SETTING'} onChange={(e) => setOperation(e.target.value)} />
-                <label className="btn btn-outline-primary fw-semibold" htmlFor="targetSetting">
-                  🎯 Target Setting
-                </label>
-                
-                <input type="radio" className="btn-check" name="operation" id="targetAchieved" value="TARGET_ACHIEVED" onChange={(e) => setOperation(e.target.value)} disabled />
-                <label className="btn btn-outline-secondary fw-semibold disabled" htmlFor="targetAchieved">
-                  ✅ Target Achieved (Next Phase)
-                </label>
-              </div>
-              <small className="text-muted d-block mt-1">Currently showing TARGET SETTING mode (Current FY only)</small>
-            </div>
 
-            <div className="col-md-6">
-              <label className="form-label fw-semibold">Financial Year *</label>
-              <select className="form-select form-select-lg" value={selectedFY} onChange={(e) => setSelectedFY(e.target.value)}>
-                {operation === 'TARGET_SETTING' && 
-                  financialYears.slice(0, 1).map(fy => (
-                    <option key={fy.id} value={fy.id}>
-                      {fy.name} (Current Year)
-                    </option>
-                  ))
-                }
+        <div className="col-md-3">
+          <label className="form-label fw-semibold mb-2" style={{
+            color: (!centrecode || centrecode.trim() === '') ? '#dc3545' : '#495057',
+            fontWeight: 'bold'
+          }}>
+            💼 Centre {(!centrecode || centrecode.trim() === '') && <span style={{color: '#dc3545'}}>*REQUIRED</span>}
+          </label>
+          {String(assignedCentre).toUpperCase() === 'ALL' ? (
+            <>
+              <select
+                className={`form-select form-select-sm ${(!centrecode || centrecode.trim() === '') ? 'is-invalid border-danger border-3' : ''}`}
+                value={centrecode}
+                onChange={(e) => {
+                  const selectedCentre = e.target.value;
+                  
+                  // Validate centre selection
+                  if (!selectedCentre || selectedCentre.trim() === '') {
+                    setTooltipError({
+                      rowId: null,
+                      field: 'centrecode',
+                      message: '⚠️ Please select a centre before proceeding'
+                    });
+                    return;
+                  }
+                  
+                  // Clear tooltip error
+                  setTooltipError(null);
+                  
+                  // Update centre
+                  setCentrecode(selectedCentre);
+                  
+                  console.log(`📍 Centre changed to: ${selectedCentre}, Fetching saved data...`);
+                  
+                  // Fetch saved rows for selected centre and FY
+                  fetchSavedRowsForCentre(selectedCentre, selectedFY).then(savedRows => {
+                    console.log(`🔄 Setting rows with ${savedRows.length} saved rows`);
+                    
+                    setRows(prev => {
+                      // Remove ALL previously saved rows from other centres
+                      // Keep ONLY template rows (where isSaved === false)
+                      const templateRows = prev.filter(r => !r.isSaved);
+                      
+                      // Combine: new saved rows + empty template
+                      const newRows = [...savedRows, ...templateRows];
+                      
+                      console.log(`📋 Total rows after centre change: ${newRows.length} (${savedRows.length} saved + ${templateRows.length} template)`);
+                      
+                      return newRows;
+                    });
+                  });
+                }}
+                style={{
+                  fontSize: '0.9rem',
+                  borderWidth: (!centrecode || centrecode.trim() === '') ? '3px' : '1px',
+                  backgroundColor: (!centrecode || centrecode.trim() === '') ? '#fff5f5' : '#fff'
+                }}
+              >
+                <option value="">🔴 SELECT CENTRE FIRST...</option>
+                {centres.map(c => (
+                  <option key={c.centrecode} value={c.centrecode}>
+                    {`${c.centreshortname} - ${c.centrelongname}`}
+                  </option>
+                ))}
               </select>
-              <small className="text-muted d-block mt-1">Only current year available for Target Setting</small>
+              {tooltipError?.field === 'centrecode' && (
+                <div className="invalid-feedback d-block" style={{color: '#dc3545', fontSize: '0.85rem', marginTop: '0.25rem', fontWeight: 'bold'}}>
+                  {tooltipError.message}
+                </div>
+              )}
+              {(!centrecode || centrecode.trim() === '') && !tooltipError && (
+                <small style={{color: '#dc3545', display: 'block', marginTop: '0.5rem', fontWeight: 'bold'}}>
+                  👆 Select your centre to proceed
+                </small>
+              )}
+            </>
+          ) : (
+            <div className="alert alert-success mb-0 py-2 px-3" style={{fontSize: '0.9rem', display: 'flex', alignItems: 'center', backgroundColor: '#d4edda', borderColor: '#28a745'}}>
+              <strong>
+                {centres.length > 0 
+                  ? (() => {
+                      const found = centres.find(c => c.centrecode === (centrecode || assignedCentre));
+                      return found 
+                        ? `✅ ${found.centreshortname} - ${found.centrelongname}`
+                        : assignedCentre;
+                    })()
+                  : (centrecode || assignedCentre || 'Loading...')
+                }
+              </strong>
+              {/*<small className="ms-2 text-muted">(Role-based)</small>*/}
             </div>
+          )}
+        </div>
+
+        <div className="col-md-4">
+          <label className="form-label fw-semibold mb-2">📅 Financial Year</label>
+          <div className="alert alert-info mb-0 py-2 px-3" style={{fontSize: '0.9rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between'}}>
+            <span>{operation === 'TARGET_SETTING' ? '🎯 2026-2027 (Next Year)' : '✅ 2025-2026 (Current Year)'}</span>
           </div>
         </div>
       </div>
 
       {/* ===== DATA ENTRY TABLE ===== */}
-      <div className="card border-0 shadow-sm mb-4">
+      <div className={`card border-0 shadow-sm mb-4 ${(!centrecode || centrecode.trim() === '') ? 'opacity-50' : ''}`} style={{pointerEvents: (!centrecode || centrecode.trim() === '') ? 'none' : 'auto'}}>
         <div className="card-header bg-success text-white">
           <div className="d-flex justify-content-between align-items-center">
             <h5 className="mb-0">📊 Target Settings by Objective ({rows.length} entries)</h5>
@@ -1015,10 +1412,15 @@ const OperationsTargetSettingPage = () => {
           </div>
         </div>
 
-      
-
         <div className="card-body">
-          {rows.length === 0 ? (
+          {(!centrecode || centrecode.trim() === '') ? (
+            <div className="alert alert-danger text-center py-5" style={{backgroundColor: '#f8d7da', borderColor: '#f5c6cb'}}>
+              <h6 style={{fontSize: '1.2rem', fontWeight: 'bold', color: '#721c24'}}>🔴 Data Entry Disabled</h6>
+              <p style={{color: '#721c24', marginBottom: '0'}}>
+                <strong>Please select a Centre above to start entering target settings.</strong>
+              </p>
+            </div>
+          ) : rows.length === 0 ? (
             <div className="alert alert-info text-center py-4">
               <h6>Loading objectives from API...</h6>
               <p className="mb-0">All objectives will appear as rows once loaded</p>
@@ -1045,7 +1447,19 @@ const OperationsTargetSettingPage = () => {
                   </thead>
 
                   <tbody>
-                    {objectives.map(obj => {
+                    {objectives
+                      .filter(obj => {
+                        // Filter objectives based on HQ mandatory restriction
+                        // If mandatory === 'HQ', only show for centre code 13 or centre short name HQ
+                        if (obj.mandatory === 'HQ') {
+                          const isHQCentre = centrecode === '13' || 
+                            (centres.find(c => c.centrecode === centrecode)?.centreshortname === 'HQ');
+                          return isHQCentre;
+                        }
+                        // Show all other objectives
+                        return true;
+                      })
+                      .map(obj => {
                       const objEntries = rows.filter(r => r.objectCode === obj.objectivecode);
                       const defaultWeight = weights[obj.objectivecode];
                       const allowsMultiple = obj.multipleentries === 'Yes';
@@ -1101,7 +1515,9 @@ const OperationsTargetSettingPage = () => {
                                 {/* ACTION CODE */}
                                 <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.2rem', backgroundColor: '#f8f9fa', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'actionCode' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
-                                    {row.multipleEntries ? (
+                                    {row.isSaved && !row.isEditing ? (
+                                      <small>{row.actionName || row.actionCode || '-'}</small>
+                                    ) : row.isEditing && row.multipleEntries ? (
                                       <CreatableSelect
                                         isClearable
                                         isSearchable
@@ -1229,35 +1645,33 @@ const OperationsTargetSettingPage = () => {
                                   </div>
                                 </td>
 
-                                {/* SUCCESS INDICATOR */}
+                                {/* SUCCESS INDICATOR - ALWAYS AVAILABLE DIRECTLY FROM API (NOT DEPENDENT ON ACTION CODE) */}
                                 <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.3rem', width: '20%', backgroundColor: '#f8f9fa', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'successIndicatorCode' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
-                                    {row.isEditing && row.multipleEntries ? (
+                                    {row.isSaved && !row.isEditing ? (
+                                      <small>{row.siName ? row.siName : '-'}</small>
+                                    ) : row.isEditing && row.multipleEntries ? (
                                       <select 
                                         className="form-select form-select-sm"
                                         value={row.successIndicatorCode || ''}
                                         onChange={(e) => {
                                           const siCode = e.target.value;
-                                          handleSIChange(row.id, row.objectCode, row.actionCode, siCode);
+                                          if (siCode) {
+                                            handleSIChange(row.id, row.objectCode, row.actionCode, siCode);
+                                          }
                                         }}
-                                        disabled={!row.actionCode}
+                                        disabled={!isCentreLocked()}
                                         style={{fontSize: '0.8rem', padding: '0.2rem'}}
                                       >
-                                        <option value="">Select...</option>
-                                        {successIndicators[`${row.objectCode}_${row.actionCode}`]?.map(si => (
+                                        <option value="">Select SI...</option>
+                                        {successIndicators[row.objectCode]?.map(si => (
                                           <option key={si.successindicatorcode} value={si.successindicatorcode}>
                                             {si.successindicatordescription}
                                           </option>
                                         )) || []}
                                       </select>
                                     ) : (
-                                      <div>
-                                        {row.siName ? (
-                                          <small>{row.siName}</small>
-                                        ) : (
-                                          <span className="text-muted">-</span>
-                                        )}
-                                      </div>
+                                      <small>{row.siName ? row.siName : '-'}</small>
                                     )}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'successIndicatorCode' && (
                                       <div style={{
@@ -1299,7 +1713,7 @@ const OperationsTargetSettingPage = () => {
                                       className="form-select form-select-sm"
                                       value={row.selectedWeightType || ''}
                                       onChange={(e) => handleWeightTypeChange(row.id, e.target.value)}
-                                      disabled={row.unitPreferred === 'Fixed' || row.multipleEntries}
+                                      disabled={row.unitPreferred === 'Fixed' || row.multipleEntries || isCentreLocked()}
                                       style={{fontSize: '0.8rem', padding: '0.2rem'}}
                                     >
                                       <option value="">Select...</option>
@@ -1333,60 +1747,185 @@ const OperationsTargetSettingPage = () => {
 
                                 {/* EXCELLENT INPUT */}
                                 <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'excellent' ? '3px solid #dc3545' : 'none'}}>
-                                  <div>
+                                  <div style={{position: 'relative'}}>
                                     {renderWeightInput(row, 'excellent')}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'excellent' && (
-                                      <small className="text-danger d-block mt-1" style={{fontSize: '0.65rem', fontWeight: 'bold'}}>
-                                        ⚠️ {tooltipError.message}
-                                      </small>
+                                      <div style={{
+                                        position: 'absolute',
+                                        top: '100%',
+                                        left: '50%',
+                                        transform: 'translateX(-50%)',
+                                        marginTop: '4px',
+                                        backgroundColor: '#dc3545',
+                                        color: 'white',
+                                        padding: '6px 12px',
+                                        borderRadius: '4px',
+                                        fontSize: '0.75rem',
+                                        zIndex: 1000,
+                                        whiteSpace: 'nowrap',
+                                        pointerEvents: 'auto'
+                                      }}>
+                                        {tooltipError.message}
+                                        <div style={{
+                                          position: 'absolute',
+                                          bottom: '100%',
+                                          left: '50%',
+                                          transform: 'translateX(-50%)',
+                                          width: '0',
+                                          height: '0',
+                                          borderLeft: '6px solid transparent',
+                                          borderRight: '6px solid transparent',
+                                          borderBottom: '6px solid #dc3545'
+                                        }}></div>
+                                      </div>
                                     )}
                                   </div>
                                 </td>
 
                                 {/* VERY GOOD INPUT */}
                                 <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'veryGood' ? '3px solid #dc3545' : 'none'}}>
-                                  <div>
+                                  <div style={{position: 'relative'}}>
                                     {renderWeightInput(row, 'veryGood')}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'veryGood' && (
-                                      <small className="text-danger d-block mt-1" style={{fontSize: '0.65rem', fontWeight: 'bold'}}>
-                                        ⚠️ {tooltipError.message}
-                                      </small>
+                                      <div style={{
+                                        position: 'absolute',
+                                        top: '100%',
+                                        left: '50%',
+                                        transform: 'translateX(-50%)',
+                                        marginTop: '4px',
+                                        backgroundColor: '#dc3545',
+                                        color: 'white',
+                                        padding: '6px 12px',
+                                        borderRadius: '4px',
+                                        fontSize: '0.75rem',
+                                        zIndex: 1000,
+                                        whiteSpace: 'nowrap',
+                                        pointerEvents: 'auto'
+                                      }}>
+                                        {tooltipError.message}
+                                        <div style={{
+                                          position: 'absolute',
+                                          bottom: '100%',
+                                          left: '50%',
+                                          transform: 'translateX(-50%)',
+                                          width: '0',
+                                          height: '0',
+                                          borderLeft: '6px solid transparent',
+                                          borderRight: '6px solid transparent',
+                                          borderBottom: '6px solid #dc3545'
+                                        }}></div>
+                                      </div>
                                     )}
                                   </div>
                                 </td>
 
                                 {/* GOOD INPUT */}
                                 <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'good' ? '3px solid #dc3545' : 'none'}}>
-                                  <div>
+                                  <div style={{position: 'relative'}}>
                                     {renderWeightInput(row, 'good')}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'good' && (
-                                      <small className="text-danger d-block mt-1" style={{fontSize: '0.65rem', fontWeight: 'bold'}}>
-                                        ⚠️ {tooltipError.message}
-                                      </small>
+                                      <div style={{
+                                        position: 'absolute',
+                                        top: '100%',
+                                        left: '50%',
+                                        transform: 'translateX(-50%)',
+                                        marginTop: '4px',
+                                        backgroundColor: '#dc3545',
+                                        color: 'white',
+                                        padding: '6px 12px',
+                                        borderRadius: '4px',
+                                        fontSize: '0.75rem',
+                                        zIndex: 1000,
+                                        whiteSpace: 'nowrap',
+                                        pointerEvents: 'auto'
+                                      }}>
+                                        {tooltipError.message}
+                                        <div style={{
+                                          position: 'absolute',
+                                          bottom: '100%',
+                                          left: '50%',
+                                          transform: 'translateX(-50%)',
+                                          width: '0',
+                                          height: '0',
+                                          borderLeft: '6px solid transparent',
+                                          borderRight: '6px solid transparent',
+                                          borderBottom: '6px solid #dc3545'
+                                        }}></div>
+                                      </div>
                                     )}
                                   </div>
                                 </td>
 
                                 {/* FAIR INPUT */}
                                 <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'fair' ? '3px solid #dc3545' : 'none'}}>
-                                  <div>
+                                  <div style={{position: 'relative'}}>
                                     {renderWeightInput(row, 'fair')}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'fair' && (
-                                      <small className="text-danger d-block mt-1" style={{fontSize: '0.65rem', fontWeight: 'bold'}}>
-                                        ⚠️ {tooltipError.message}
-                                      </small>
+                                      <div style={{
+                                        position: 'absolute',
+                                        top: '100%',
+                                        left: '50%',
+                                        transform: 'translateX(-50%)',
+                                        marginTop: '4px',
+                                        backgroundColor: '#dc3545',
+                                        color: 'white',
+                                        padding: '6px 12px',
+                                        borderRadius: '4px',
+                                        fontSize: '0.75rem',
+                                        zIndex: 1000,
+                                        whiteSpace: 'nowrap',
+                                        pointerEvents: 'auto'
+                                      }}>
+                                        {tooltipError.message}
+                                        <div style={{
+                                          position: 'absolute',
+                                          bottom: '100%',
+                                          left: '50%',
+                                          transform: 'translateX(-50%)',
+                                          width: '0',
+                                          height: '0',
+                                          borderLeft: '6px solid transparent',
+                                          borderRight: '6px solid transparent',
+                                          borderBottom: '6px solid #dc3545'
+                                        }}></div>
+                                      </div>
                                     )}
                                   </div>
                                 </td>
 
                                 {/* POOR INPUT */}
                                 <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'poor' ? '3px solid #dc3545' : 'none'}}>
-                                  <div>
+                                  <div style={{position: 'relative'}}>
                                     {renderWeightInput(row, 'poor')}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'poor' && (
-                                      <small className="text-danger d-block mt-1" style={{fontSize: '0.65rem', fontWeight: 'bold'}}>
-                                        ⚠️ {tooltipError.message}
-                                      </small>
+                                      <div style={{
+                                        position: 'absolute',
+                                        top: '100%',
+                                        left: '50%',
+                                        transform: 'translateX(-50%)',
+                                        marginTop: '4px',
+                                        backgroundColor: '#dc3545',
+                                        color: 'white',
+                                        padding: '6px 12px',
+                                        borderRadius: '4px',
+                                        fontSize: '0.75rem',
+                                        zIndex: 1000,
+                                        whiteSpace: 'nowrap',
+                                        pointerEvents: 'auto'
+                                      }}>
+                                        {tooltipError.message}
+                                        <div style={{
+                                          position: 'absolute',
+                                          bottom: '100%',
+                                          left: '50%',
+                                          transform: 'translateX(-50%)',
+                                          width: '0',
+                                          height: '0',
+                                          borderLeft: '6px solid transparent',
+                                          borderRight: '6px solid transparent',
+                                          borderBottom: '6px solid #dc3545'
+                                        }}></div>
+                                      </div>
                                     )}
                                   </div>
                                 </td>
@@ -1409,17 +1948,25 @@ const OperationsTargetSettingPage = () => {
                                       )}
                                     </button>
                                     
-                                    {/* ADD ENTRY BUTTON */}
-                                    {row.multipleEntries && getLastRowForObjective(row.objectCode)?.id === row.id && (
+                                    {/* ADD ENTRY BUTTON - Only show after row is saved - HIGHLIGHTED */}
+                                    {row.multipleEntries && row.isSaved && getLastRowForObjective(row.objectCode)?.id === row.id && (
                                       <>
                                         <button 
-                                          className="btn btn-sm btn-outline-info"
+                                          className="btn btn-sm btn-success"
                                           onClick={() => addNewEntryForObjective(row.objectCode)}
                                           disabled={loading}
-                                          title="Add row"
-                                          style={{fontSize: '0.7rem', padding: '0.2rem 0.3rem', minWidth: '24px', flex: '0 0 auto'}}
+                                          title="Add new entry"
+                                          style={{
+                                            fontSize: '0.7rem', 
+                                            padding: '0.3rem 0.5rem', 
+                                            minWidth: '28px', 
+                                            flex: '0 0 auto',
+                                            fontWeight: '600',
+                                            boxShadow: '0 0 8px rgba(40, 167, 69, 0.6)',
+                                            animation: 'pulse 2s infinite'
+                                          }}
                                         >
-                                          <Plus size={11} />
+                                          <Plus size={12} />
                                         </button>
                                       </>
                                     )}
@@ -1527,17 +2074,20 @@ const OperationsTargetSettingPage = () => {
       <div className="alert alert-info border-start border-4 border-info">
         <h6 className="fw-bold mb-2">📌 How to Use:</h6>
         <ol className="mb-0">
-          <li>All <strong>objectives auto-load</strong> from the API as rows</li>
-          <li>For objectives that allow <strong>Multiple Entries</strong> (like 001A, 002A, 003A), use the <strong>"Add Entry"</strong> buttons above the table to add more entries</li>
+          <li><strong style={{color: '#dc3545'}}>🔴 FIRST: Select a Centre</strong> - This is MANDATORY! Select your centre from the dropdown above before doing anything else. Data entry and operations are disabled until you select a centre.</li>
+          <li>Select <strong>Operation</strong> and <strong>Financial Year</strong> at the top</li>
+          <li>All <strong>objectives auto-load</strong> from the API as collapsible rows</li>
+          <li>For objectives that allow <strong>Multiple Entries</strong> (like 001A, 002A, 003A), use the <strong>"Add Entry"</strong> button (visible only after saving the first entry)</li>
           <li>For objectives with <strong>predefinedactions = "Yes"</strong>, select from dropdown. For <strong>"No"</strong>, enter description inline</li>
           <li>System auto-generates action codes like "001AA000001" for non-predefined actions</li>
           <li>Select <strong>Success Indicator</strong> → Weight type (Date/Number/%) loads from API</li>
-          <li>Performance levels <strong>(Excellent, Very Good, Good, Fair, Poor)</strong> are <strong>OPTIONAL</strong> - you can leave them empty or fill any combination</li>
+          <li><strong>Excellent field is MANDATORY</strong> — rest of the performance levels (Very Good, Good, Fair, Poor) are optional</li>
           <li>If you enter values, they must follow the correct order: For DATE type, earlier dates for higher performance. For NUMBER/PERCENTAGE, higher values for higher performance</li>
-          <li>Input type automatically adjusts based on weight type (date picker, text, percentage)</li>
-          <li>Click <strong>"Save"</strong> to save row to backend and freeze it</li>
+          <li>Date values display in <strong>dd/mm/yyyy</strong> format for user-friendly viewing</li>
+          <li>Click <strong>"Save"</strong> to save row to backend and freeze all values (Action Code, Success Indicator become read-only)</li>
           <li>Click <strong>"Edit"</strong> to modify a saved row</li>
-          <li>Click <strong>"Delete"</strong> to remove a row</li>
+          <li>Click <strong>"Delete"</strong> to remove a row (only for multiple-entry objectives)</li>
+          <li>Once a row is saved, an <strong>"Add Entry"</strong> button appears to add the next entry</li>
         </ol>
       </div>
 
@@ -1549,8 +2099,11 @@ const OperationsTargetSettingPage = () => {
           <li><code>GET http://localhost:8080/api/actions/objective/{'{objectcode}'}</code> - Fetch actions by objective</li>
           <li><code>GET http://localhost:8080/api/successindicator/success/{'{objectcode}'}</code> - Fetch success indicators</li>
           <li><code>GET http://localhost:8080/api/objectives/getWeights/{'{objectcode}'}</code> - Fetch weight type</li>
-          <li><code>POST http://localhost:8080/api/actions</code> - Save user-entered actions with auto-generated codes</li>
-          <li><code>POST http://localhost:8080/api/target-setting</code> - Save target setting row</li>
+          <li><code>POST http://localhost:8080/api/actions/auto</code> - Save user-entered actions with auto-generated codes</li>
+          <li><code>POST http://localhost:8080/api/targets</code> - <strong>CREATE/UPDATE target setting row</strong></li>
+          <li><code>POST http://localhost:8080/api/targets/delete</code> - <strong>DELETE target setting row</strong></li>
+          <li><code>POST http://localhost:8080/api/targets/by-id</code> - <strong>GET target setting by composite ID</strong></li>
+          <li><code>GET http://localhost:8080/api/targets</code> - <strong>GET all target settings</strong></li>
         </ul>
       </div>
 

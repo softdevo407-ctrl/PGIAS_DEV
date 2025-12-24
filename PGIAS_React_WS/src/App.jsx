@@ -221,22 +221,33 @@ const AuthProvider = ({ children }) => {
       if (response.ok) {
         const rolesData = await response.json();
         
-        // Extract role codes from response
+        // Extract role codes and centre code from response
         let rolesArray = [];
+        let centreCodeFromApi = '';
+        
         if (Array.isArray(rolesData) && rolesData.length > 0) {
+          // If response is an array, extract roles and centre from first object
           rolesArray = rolesData.map(item => {
             return typeof item === 'object' && item.roleCode ? item.roleCode : item;
           });
+          // Get centre code from first item if it exists
+          if (typeof rolesData[0] === 'object' && rolesData[0].centreCode) {
+            centreCodeFromApi = rolesData[0].centreCode;
+          }
+        } else if (typeof rolesData === 'object' && rolesData.roleCode) {
+          // If response is a single object with roleCode
+          rolesArray = [rolesData.roleCode];
+          centreCodeFromApi = rolesData.centreCode || '';
         }
         
-        // Create user object with roles
+        // Create user object with roles and centre code from API
         const userWithRoles = {
           loginId: loginId,
           name: loginId.toUpperCase(),
           email: `${loginId}@isro.gov.in`,
           roles: rolesArray.length > 0 ? rolesArray : ['USER'],
           roleCode: rolesArray.length > 0 ? rolesArray[0] : 'USER',
-          centreCode: 'CENTRE01',
+          centreCode: centreCodeFromApi || 'CENTRE01',
           loginTime: new Date().toISOString()
         };
         
@@ -245,6 +256,13 @@ const AuthProvider = ({ children }) => {
         
         setUser(userWithRoles);
         localStorage.setItem('pgias_user', JSON.stringify(userWithRoles));
+        // Also store loginId and centreCode separately for pages that read them directly
+        try {
+          localStorage.setItem('loginId', loginId);
+          localStorage.setItem('centreCode', userWithRoles.centreCode || '');
+        } catch (e) {
+          console.warn('Could not set loginId/centreCode in localStorage', e);
+        }
         sessionStorage.setItem('pgias_session_token', sessionToken);
         setSessionExpired(false);
         setLoading(false);
@@ -270,6 +288,9 @@ const AuthProvider = ({ children }) => {
   const logout = () => {
     setUser(null);
     localStorage.removeItem('pgias_user');
+    // Clear the convenience login keys
+    localStorage.removeItem('loginId');
+    localStorage.removeItem('centreCode');
     sessionStorage.removeItem('pgias_session_token');
     
     if (sessionTimeoutRef.current) {
@@ -1571,7 +1592,7 @@ const OperationsPage = () => {
       id: Date.now(),
       ...formData,
       submittedDate: new Date().toLocaleString(),
-      userId: 'USER001' // TODO: Get from auth context
+      userId: storedUser // TODO: Get from auth context
     };
     
     setSubmittedData(prev => [...prev, submission]);
@@ -2165,7 +2186,8 @@ const MainLayout = () => {
         setActivePage={setActivePage}
       />
       <div className="flex-grow-1 overflow-auto bg-light" style={{ minHeight: '100vh' }}>
-        {showSessionWarning && (
+        {/* Session warning disabled - will be re-enabled if needed */}
+        {false && (
           <div className="alert alert-warning alert-dismissible fade show m-3 d-flex align-items-center" role="alert">
             <AlertCircle size={20} className="me-2" />
             <div className="flex-grow-1">
