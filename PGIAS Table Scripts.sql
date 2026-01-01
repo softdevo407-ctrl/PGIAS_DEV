@@ -1300,8 +1300,6 @@ ALTER TABLE IF EXISTS operations.targetssetandachieveddetails
 //////////////////////******************************//////////////////////////
 
 
-
-
 // OPERATIONAL DATA ENTRY - TARGET SETTING PAGE (Backend Integrated)
 // This is a new, completely redesigned page with table-based entry
 
@@ -1309,10 +1307,37 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Edit, Trash2, CheckCircle, ChevronDown, ChevronRight, X, Search, Loader, AlertCircle } from 'lucide-react';
 import CreatableSelect from 'react-select/creatable';
 
+// Add pulse animation for highlighted buttons
+const pulseStyle = `
+  @keyframes pulse {
+    0% {
+      box-shadow: 0 0 8px rgba(40, 167, 69, 0.6);
+    }
+    50% {
+      box-shadow: 0 0 16px rgba(40, 167, 69, 0.8);
+    }
+    100% {
+      box-shadow: 0 0 8px rgba(40, 167, 69, 0.6);
+    }
+  }
+`;
+
+// Inject styles into document head
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.textContent = pulseStyle;
+  document.head.appendChild(style);
+}
+
 const OperationsTargetSettingPage = () => {
   // State Management
   const [operation, setOperation] = useState('TARGET_SETTING');
-  const [selectedFY, setSelectedFY] = useState('FY2024-25');
+  const [selectedFY, setSelectedFY] = useState('2026-2027');
+  const [centrecode, setCentrecode] = useState(''); // Will be populated from user roles/permissions
+  const [userRoles, setUserRoles] = useState([]); // Roles assigned to user
+  const [userid, setUserid] = useState('USER001'); // Default user ID (can be fetched from session/context)
+  const [assignedCentre, setAssignedCentre] = useState(null);
+  const [centres, setCentres] = useState([]);
   const [objectives, setObjectives] = useState([]);
   const [actions, setActions] = useState({});
   const [successIndicators, setSuccessIndicators] = useState({});
@@ -1342,9 +1367,26 @@ const OperationsTargetSettingPage = () => {
     { id: 'FY2022-23', name: 'FY 2022-23' }
   ];
 
-  // Fetch Objectives on component mount
+  // Get dynamic financial year based on operation type
+  // TARGET_SETTING: Next financial year (2026-2027)
+  // TARGET_ACHIEVED: Current year (2025-2026)
+  const getDynamicFY = (op) => {
+    if (op === 'TARGET_SETTING') {
+      return '2026-2027'; // Next financial year for target setting
+    } else {
+      return '2025-2026'; // Current year for achievement
+    }
+  };
+
+  // Update selectedFY whenever operation changes
+  useEffect(() => {
+    setSelectedFY(getDynamicFY(operation));
+  }, [operation]);
+
+  // Fetch Objectives and user roles on component mount
   useEffect(() => {
     fetchObjectives();
+    initializeUserFromLocalStorage();
     // Initialize Bootstrap tooltips
     if (window.$ && window.$.fn.tooltip) {
       window.$('[data-toggle="tooltip"]').tooltip({
@@ -1354,6 +1396,78 @@ const OperationsTargetSettingPage = () => {
       });
     }
   }, []);
+
+  // Initialize user data from localStorage (set by App.jsx on login)
+  const initializeUserFromLocalStorage = () => {
+    try {
+      // Read loginId and centre codes from localStorage set by App.jsx during authentication
+      const loginId = localStorage.getItem('loginId');
+      const centreCodeFromStorage = localStorage.getItem('centreCode'); // Comma-separated string
+      const centreCodesArrayFromStorage = localStorage.getItem('centreCodesArray'); // JSON array
+      
+      console.log('🔑 Retrieved from localStorage - User:', loginId, '| Centre:', centreCodeFromStorage);
+
+      // Set userid to loginId
+      setUserid(loginId);
+      
+      // Parse centreCodesArray if available (takes priority over centreCode string)
+      let parsedCentreArray = null;
+      try {
+        if (centreCodesArrayFromStorage) {
+          parsedCentreArray = JSON.parse(centreCodesArrayFromStorage);
+          console.log('📍 Parsed centre codes array:', parsedCentreArray);
+        }
+      } catch (parseErr) {
+        console.warn('Failed to parse centreCodesArray:', parseErr);
+      }
+
+      // Use parsed array if available, otherwise fallback to parsing the comma-separated string
+      if (parsedCentreArray && Array.isArray(parsedCentreArray) && parsedCentreArray.length > 0) {
+        setAssignedCentre(parsedCentreArray);
+      } else if (centreCodeFromStorage && (centreCodeFromStorage.includes(',') || centreCodeFromStorage.includes('|') || centreCodeFromStorage.includes(';'))) {
+        const separators = /[,|;]+/;
+        const codes = centreCodeFromStorage.split(separators).map(c => c.trim()).filter(Boolean);
+        setAssignedCentre(codes);
+      } else {
+        setAssignedCentre(centreCodeFromStorage);
+      }
+
+      // Normalize centre assignment: if 'All' or 'ALL', allow selection; otherwise pre-fill or force selection
+      if (String(centreCodeFromStorage).toUpperCase() === 'ALL') {
+        setCentrecode(''); // Allow user to select from all centres
+      } else if (parsedCentreArray?.length > 1 || (centreCodeFromStorage && (centreCodeFromStorage.includes(',') || centreCodeFromStorage.includes('|') || centreCodeFromStorage.includes(';')))) {
+        // Multiple assigned centres -> force user to pick one
+        setCentrecode('');
+      } else {
+        setCentrecode(centreCodeFromStorage);
+      }
+
+      console.log('👤 Initialized from localStorage - User:', loginId, '| Centre(s):', centreCodeFromStorage);
+      
+      // Fetch centres list for dropdown
+      fetchCentres();
+    } catch (err) {
+      console.error('Failed to initialize user from localStorage:', err);
+      setUserid('USER001');
+      setCentrecode('01');
+    }
+  };
+
+  // Fetch all centres from backend
+  // API returns: { centrecode, centrelongname, centreshortname, ... }
+  const fetchCentres = async () => {
+    try {
+      const res = await fetch('http://localhost:8080/api/centres');
+      if (!res.ok) throw new Error('Failed to fetch centres');
+      const data = await res.json();
+      console.log('✅ Fetched Centres:', data);
+      // Centres array with fields: centrecode (lowercase), centreshortname, centrelongname
+      setCentres(data || []);
+    } catch (err) {
+      console.error('Failed to load centres:', err);
+      setCentres([]);
+    }
+  };
 
   // When objectives load, create rows for each objective
   useEffect(() => {
@@ -1464,6 +1578,17 @@ const OperationsTargetSettingPage = () => {
       });
     }
   }, [objectives, selectedFY]);
+
+  // Fetch Success Indicators for ALL objectives when objectives load
+  // This makes SI dropdown always available without depending on action code selection
+  useEffect(() => {
+    if (objectives.length > 0) {
+      console.log('🔄 Fetching Success Indicators for all objectives...');
+      objectives.forEach(obj => {
+        fetchSuccessIndicators(obj.objectivecode);  // Fetch for objective only, no actionCode
+      });
+    }
+  }, [objectives]);
 
   // Update Bootstrap tooltips when error state changes
   useEffect(() => {
@@ -1629,24 +1754,32 @@ const OperationsTargetSettingPage = () => {
     }
   };
 
-  // Fetch Success Indicators from: http://localhost:8080/api/successindicator/{objectcode}/{actioncode}
-  const fetchSuccessIndicators = async (objectCode, actionCode) => {
+  // Fetch Success Indicators from: http://localhost:8080/api/successindicator/success/{objectcode}
+  // SUCCESS INDICATORS ARE NOW FETCHED DIRECTLY FOR EACH OBJECTIVE - NO LONGER DEPENDENT ON ACTION CODE
+  const fetchSuccessIndicators = async (objectCode, actionCode = null) => {
     try {
       const response = await fetch(`http://localhost:8080/api/successindicator/success/${objectCode}`);
       if (!response.ok) throw new Error('Failed to fetch success indicators');
       const data = await response.json();
-      console.log(`Fetched Success Indicators for ${objectCode} + ${actionCode}:`, data);
-      const key = `${objectCode}_${actionCode}`;
+      console.log(`✅ Fetched Success Indicators for Objective ${objectCode}:`, data);
+      
+      // Store by objectCode only (universal for all actions in this objective)
+      const key = objectCode;  // Changed from objectCode_actionCode to just objectCode
       setSuccessIndicators(prev => ({
         ...prev,
         [key]: data
       }));
       
-      // Total weight will be calculated from saved row values, not from initial SI data
-      // Store success indicators first, weight calculation happens when rows are saved
+      // Also store by objectCode_actionCode format for backward compatibility with existing logic
+      if (actionCode) {
+        setSuccessIndicators(prev => ({
+          ...prev,
+          [`${objectCode}_${actionCode}`]: data
+        }));
+      }
     } catch (err) {
       console.error('Failed to fetch success indicators:', err);
-      const key = `${objectCode}_${actionCode}`;
+      const key = objectCode;
       setSuccessIndicators(prev => ({
         ...prev,
         [key]: []
@@ -1686,6 +1819,101 @@ const OperationsTargetSettingPage = () => {
     } catch (err) {
       console.error('Failed to fetch weight:', err);
       return null;
+    }
+  };
+
+  // Fetch saved rows for selected centre and financial year
+  // This loads any previously saved data for the current centre/FY combination
+  const fetchSavedRowsForCentre = async (centre, fy) => {
+    try {
+      if (!centre) {
+        console.log('❌ No centre provided, skipping fetch');
+        return [];
+      }
+      
+      console.log(`🔍 API Call: GET /api/targets?centrecode=${centre}&financialyear=${fy}`);
+      const response = await fetch(`http://localhost:8080/api/targets?centrecode=${centre}&financialyear=${fy}`);
+      
+      if (!response.ok) {
+        console.warn(`⚠️ API returned status ${response.status} for centre ${centre}`);
+        return [];
+      }
+      
+      const data = await response.json();
+      console.log(`📦 API Response:`, data);
+      console.log(`✅ Found ${Array.isArray(data) ? data.length : 0} saved rows for centre ${centre}`);
+      
+      // Map saved data to rows state
+      if (!Array.isArray(data) || data.length === 0) {
+        console.log(`ℹ️ No data returned - empty array or not array`);
+        return [];
+      }
+      
+      const savedRows = data.map((item, idx) => {
+        // Determine weight type based on unit field
+        let weightType = 'NUMBER'; // default
+        if (item.unit === 'Date' || item.unit === 'DATE') {
+          weightType = 'DATE';
+        } else if (item.unit === 'Percentage' || item.unit === 'PERCENTAGE' || item.validforpercentage === 'Yes') {
+          weightType = 'PERCENTAGE';
+        }
+        
+        // Get objective metadata to determine if multipleEntries
+        const objective = objectives.find(obj => obj.objectivecode === item.objectivecode);
+        const isMultipleEntries = objective?.multipleentries === 'Yes';
+        
+        const mappedRow = {
+          id: `saved_${item.objectivecode}_${item.actioncode}_${item.successindicatorcode}`,
+          objectCode: item.objectivecode,
+          objectDescription: item.objectivedescription || '',
+          mandatory: objective?.mandatory || '',
+          multipleEntries: isMultipleEntries,
+          predefinedParameters: objective?.predefinedparameters === 'Yes' || false,
+          predefinedReferenceValues: objective?.predefinedreferencevalues === 'Yes' || false,
+          changeInTargetCriteria: objective?.changeintargetcriteria === 'Yes' || false,
+          predefinedActions: objective?.predefinedactions === 'Yes' || false,
+          weightPeriod: objective?.weightperinitofactivity || '',
+          unit: item.unit || '',
+          unitPreferred: 'Default',
+          actionCode: item.actioncode,
+          actionName: item.actiondescription || '',
+          successIndicatorCode: item.successindicatorcode,
+          siName: item.successindicatordescription || '',
+          siDescription: item.successindicatordescription || '',
+          weightInfo: null,
+          selectedWeightType: weightType,  // Now correctly set based on unit
+          weightValue: item.weightperunitofactivity ? { value: item.weightperunitofactivity, unit: '' } : null,
+          excellent: item.targetcriteriavalueexcellent || '',
+          veryGood: item.targetcriteriavalueverygood || '',
+          good: item.targetcriteriavaluegood || '',
+          fair: item.targetcriteriavaluefair || '',
+          poor: item.targetcriteriavaluepoor || '',
+          isEditing: false,
+          isSaved: true,
+          hasChanges: false,
+          originalValues: null,
+          weightperunitofactivity: item.weightperunitofactivity || 0
+        };
+        
+        console.log(`  📍 Row ${idx + 1}: ${mappedRow.objectCode} | Action: ${mappedRow.actionCode} | SI: ${mappedRow.successIndicatorCode} | MultipleEntries: ${mappedRow.multipleEntries} | Excellent: ${mappedRow.excellent}`);
+        
+        return mappedRow;
+      });
+      
+      // Auto-expand objectives that have saved rows
+      const objectsWithSavedRows = new Set(savedRows.map(r => r.objectCode));
+      setExpandedObjectives(prev => {
+        const updated = { ...prev };
+        objectsWithSavedRows.forEach(objCode => {
+          updated[objCode] = true;  // Expand objective
+        });
+        return updated;
+      });
+      
+      return savedRows;
+    } catch (err) {
+      console.error(`❌ Error fetching saved rows for centre ${centre}:`, err);
+      return [];
     }
   };
 
@@ -1740,12 +1968,13 @@ const OperationsTargetSettingPage = () => {
           weightInfo: null,
           selectedWeightType: item.unit === 'Number' ? 'NUMBER' : item.unit === 'Percentage' ? 'PERCENTAGE' : item.unit === 'Date' ? 'DATE' : 'NUMBER',
           weightValue: item.weightperunitofactivity ? { value: item.weightperunitofactivity, unit: '' } : null,
-          // Performance level target criteria
-          excellent: item.targetcriteriavalueexcellent || '',
-          veryGood: item.targetcriteriavalueverygood || '',
-          good: item.targetcriteriavaluegood || '',
-          fair: item.targetcriteriavaluefair || '',
-          poor: item.targetcriteriavaluepoor || '',
+          // Performance level target criteria - START EMPTY for single-entry objectives
+          // User must manually enter values
+          excellent: '',
+          veryGood: '',
+          good: '',
+          fair: '',
+          poor: '',
           isEditing: true,   // All fields editable
           isSaved: false,     // Allow editing
           hasChanges: false,
@@ -1791,40 +2020,93 @@ const OperationsTargetSettingPage = () => {
     }
   };
 
-  // Save Row to Backend: POST http://localhost:8080/api/target-setting
+  // Save Row to Backend: POST http://localhost:8080/api/targets
   const saveRowToBackend = async (row) => {
     try {
+      // Use selected financial year string as-is (format: 2026-2027)
+      const fyYear = selectedFY;
+
+      // Find centre short name from loaded centres
+      const selectedCentreObj = centres.find(c => c.centrecode === centrecode) || null;
+
+      // Build the complete payload matching the database table structure
+      // Only include optional performance level fields if they have actual values
       const payload = {
-        financialYear: selectedFY,
-        objectCode: row.objectCode,
-        actionCode: row.actionCode,
-        successIndicatorCode: row.successIndicatorCode,
-        weightInfo: row.weightInfo,
-        selectedWeightType: row.selectedWeightType,
-        excellent: row.excellent,
-        veryGood: row.veryGood,
-        good: row.good,
-        fair: row.fair,
-        poor: row.poor,
-        status: 'SAVED'
+        financialyear: fyYear,
+        centrecode: centrecode,
+        centreshortname: selectedCentreObj ? selectedCentreObj.centreshortname : '',
+        objectivecode: row.objectCode,
+        objectivedescription: row.objectDescription || '',
+        actioncode: row.actionCode,
+        actiondescription: row.actionName || '',
+        successindicatorcode: row.successIndicatorCode,
+        successindicatordescription: row.siName || '',
+        unit: row.unit || '',
+        targetsetvalue: row.excellent || '', // Primary target is Excellent
+        weightperunitofactivity: row.weightValue?.value || 0,
+        targetcriteriavalueexcellent: row.excellent || '',
+        // Only send optional fields if they have values
+        targetcriteriavalueverygood: (row.veryGood && String(row.veryGood).trim() !== '') ? row.veryGood : null,
+        targetcriteriavaluegood: (row.good && String(row.good).trim() !== '') ? row.good : null,
+        targetcriteriavaluefair: (row.fair && String(row.fair).trim() !== '') ? row.fair : null,
+        targetcriteriavaluepoor: (row.poor && String(row.poor).trim() !== '') ? row.poor : null,
+        achievementstatuscode: null,
+        achievementstatusdescription: null,
+        validforpercentage: row.selectedWeightType === 'PERCENTAGE' ? 'Yes' : 'No',
+        targetvalueachieved: null,
+        achievementweightperunitofactivity: null,
+        actualachievementpercentage: null,
+        statuscode: 'T01',
+        statusdescription: 'Target Setting',
+        remarksofcentres: '',
+        remarksofhqorapexcommittee: '',
+        centrelevelapproveduserid: null,
+        departmentlevelapproveduserid: null,
+        userid: userid,
+        regstatus: 'A', // Active
+        regtime: new Date().toISOString()
       };
 
       console.log('📝 Row payload to save:', payload);
       
-      // Once API is ready, uncomment below to POST to backend:
-      /*
-      const response = await fetch('http://localhost:8080/api/target-setting', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) throw new Error('Failed to save row');
-      const result = await response.json();
-      return "Saved Successfully";
-      */
+      // Determine if this is an UPDATE or CREATE
+      const isUpdate = row.isSaved && (row.hasChanges || row.isEditing);
+      let response;
       
-      // For now, just return success (API endpoint will be added)
-      return "Row saved (API endpoint pending)";
+      if (isUpdate) {
+        // UPDATE: Use PATCH with path variables
+        const updateUrl = `http://localhost:8080/api/targets/${fyYear}/${centrecode}/${row.objectCode}/${row.actionCode}/${row.successIndicatorCode}`;
+        console.log('🔄 Updating row via PATCH:', updateUrl);
+        response = await fetch(updateUrl, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      } else {
+        // CREATE: Use POST
+        console.log('➕ Creating new row via POST');
+        response = await fetch('http://localhost:8080/api/targets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      }
+      
+      if (!response.ok) {
+        let errorMessage = isUpdate ? 'Failed to update row' : 'Failed to save row';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+      
+      const result = await response.json();
+      console.log(isUpdate ? '✅ Row updated successfully:' : '✅ Row saved successfully:', result);
+      return isUpdate ? "Row updated successfully" : "Row saved successfully";
     } catch (err) {
       throw new Error('Error saving row: ' + err.message);
     }
@@ -1855,9 +2137,12 @@ const OperationsTargetSettingPage = () => {
 
   // Handle success indicator selection
   const handleSIChange = (rowId, objectCode, actionCode, siCode) => {
-    const key = `${objectCode}_${actionCode}`;
-    // successindicatorcode is a direct property in the flat API response
-    const si = successIndicators[key]?.find(s => s.successindicatorcode === siCode);
+    // Look up SI using just objectCode (SI data is now fetched independently of action code)
+    const si = successIndicators[objectCode]?.find(s => s.successindicatorcode === siCode);
+    
+    // Check if this objective allows multiple entries
+    const objective = objectives.find(obj => obj.objectivecode === objectCode);
+    const isMultipleEntries = objective?.multipleentries === 'Yes';
     
     setRows(rows.map(row =>
       row.id === rowId
@@ -1866,8 +2151,8 @@ const OperationsTargetSettingPage = () => {
             successIndicatorCode: siCode,  // Store CODE
             siName: si?.successindicatordescription || '',  // Display DESCRIPTION
             siDescription: si?.successindicatordescription || '',
-            // Don't auto-populate performance levels - let user enter manually
-            // Keep empty so user can enter their own values
+            // For multi-entry: DO NOT auto-fill performance levels - let user enter them
+            // For single-entry: DO NOT auto-fill either - let user enter them
             excellent: '',
             veryGood: '',
             good: '',
@@ -1916,14 +2201,24 @@ const OperationsTargetSettingPage = () => {
       return row;
     }));
     
-    // Clear tooltip error when user starts editing
-    if (tooltipError?.rowId === rowId) {
+    // Clear tooltip error when user starts editing this field
+    if (tooltipError?.rowId === rowId && tooltipError?.field === field) {
       setTooltipError(null);
     }
   };
 
   // Save row to backend and freeze it
   const saveRow = async (row) => {
+    // Validate centre is selected
+    if (!centrecode || centrecode.trim() === '') {
+      setTooltipError({
+        rowId: row.id,
+        field: 'centrecode',
+        message: '⚠️ Please select a centre before saving'
+      });
+      return;
+    }
+    
     // Validate mandatory fields
     if (!row.objectCode || !row.actionCode || !row.successIndicatorCode) {
       let missingField = 'objectCode';
@@ -2004,10 +2299,57 @@ const OperationsTargetSettingPage = () => {
     }
   };
 
+  // Delete Row from Backend: POST http://localhost:8080/api/targets/delete
+  const deleteRowFromBackend = async (row) => {
+    try {
+      const fyYear = selectedFY; // Use as-is (format: 2026-2027)
+      
+      // Build DELETE URL with path variables
+      const deleteUrl = `http://localhost:8080/api/targets/${fyYear}/${centrecode}/${row.objectCode}/${row.actionCode}/${row.successIndicatorCode}`;
+      console.log('🗑️ Deleting row via DELETE:', deleteUrl);
+      
+      const response = await fetch(deleteUrl, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      if (!response.ok) {
+        let errorMessage = 'Failed to delete row';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+      
+      console.log('✅ Row deleted successfully');
+      return "Row deleted successfully";
+    } catch (err) {
+      throw new Error('Error deleting row: ' + err.message);
+    }
+  };
+
   // Show confirmation dialog before deleting a row
   const requestDeleteRow = (rowId) => {
+    const row = rows.find(r => r.id === rowId);
+    if (!row) return;
+    
     if (window.confirm('Are you sure you want to delete this entry?')) {
-      setRows(rows.filter(r => r.id !== rowId));
+      setLoading(true);
+      deleteRowFromBackend(row)
+        .then(() => {
+          setRows(rows.filter(r => r.id !== rowId));
+          alert('✅ Row deleted successfully!');
+        })
+        .catch(err => {
+          alert('❌ Error: ' + err.message);
+        })
+        .finally(() => {
+          setLoading(false);
+        });
     }
   };
 
@@ -2105,17 +2447,63 @@ const OperationsTargetSettingPage = () => {
   // Format date to dd/mm/yyyy
   const formatDateDDMMYYYY = (dateStr) => {
     if (!dateStr) return '';
-    const date = new Date(dateStr + 'T00:00:00');
-    const day = String(date.getDate()).padStart(2, '0');
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${day}/${month}/${year}`;
+    try {
+      const date = new Date(dateStr + 'T00:00:00');
+      if (isNaN(date.getTime())) return dateStr;  // Return original if invalid
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      return `${day}/${month}/${year}`;
+    } catch (e) {
+      return dateStr;  // Return original on error
+    }
   };
 
   // Render input field based on selected weight type
   const renderWeightInput = (row, field) => {
     const value = row[field];
     const weightType = row.selectedWeightType || 'NUMBER';  // Use selectedWeightType, not weightInfo
+    const isDisabled = isCentreLocked();
+    
+    // Check if this is a single-entry objective (multipleentries = 'No')
+    const isSingleEntry = !row.multipleEntries;  // multipleEntries = false means single-entry
+    
+    // AFTER SAVING: All fields are disabled (frozen) until Edit is clicked
+    if (row.isSaved && !row.isEditing) {
+      // For DATE type: show formatted date, otherwise show value as-is
+      let displayValue = '';
+      if (weightType === 'DATE') {
+        displayValue = value ? formatDateDDMMYYYY(value) : '-';
+      } else {
+        displayValue = value !== null && value !== '' ? value : '-';
+      }
+      return (
+        <small className="text-muted">
+          {displayValue}
+        </small>
+      );
+    }
+    
+    // Performance level fields logic:
+    // NEW entries (not saved yet): ALWAYS ENABLED
+    // SAVED entries: 
+    //   - Single-entry: ALWAYS ENABLED (even when not editing)
+    //   - Multi-entry: DISABLED until SI selected (unless editing, then check SI)
+    let isPerformanceFieldDisabled = false;
+    
+    if (row.isSaved && !row.isEditing) {
+      // Saved row, not in edit mode: DISABLED for all
+      isPerformanceFieldDisabled = true;
+    } else if (!row.isSaved) {
+      // New/fresh entry: ALWAYS ENABLED
+      isPerformanceFieldDisabled = false;
+    } else if (row.isSaved && row.isEditing) {
+      // Editing a saved row: Enable based on objective type
+      isPerformanceFieldDisabled = isSingleEntry ? false : (!row.successIndicatorCode || isDisabled);
+    } else {
+      // Multi-entry, not saved yet, SI required
+      isPerformanceFieldDisabled = isSingleEntry ? false : (!row.successIndicatorCode || isDisabled);
+    }
 
     // Field labels for placeholders
     const fieldLabels = {
@@ -2126,21 +2514,72 @@ const OperationsTargetSettingPage = () => {
       poor: 'Poor'
     };
 
-    // For DATE type: date picker only, no manual text entry
+    // Determine if field is mandatory
+    const isMandatory = field === 'excellent';
+    
+    // Check if there's an error for THIS specific field
+    const hasError = tooltipError?.rowId === row.id && tooltipError?.field === field;
+    const errorClass = hasError ? 'is-invalid' : '';
+
+    // Get financial year date range for date validation
+    const fyDates = getFinancialYearDates(selectedFY);
+
+    // For DATE type: date picker with FY restrictions
     if (weightType === 'DATE') {
+      const isOutsideFY = value && fyDates && (value < fyDates.fromDate || value > fyDates.toDate);
+      
       return (
-        <div>
-          {row.isEditing ? (
-            <input 
-              type="date" 
-              className="form-control form-control-sm" 
-              value={value} 
-              onChange={(e) => handleFieldChange(row.id, field, e.target.value)}
-              placeholder={fieldLabels[field] || 'Select date'}
-              style={{cursor: 'pointer', color: value ? '#000' : '#999', fontSize: '0.7rem', padding: '0.2rem'}}
-            />
-          ) : (
-            <small className="text-muted">{value ? formatDateDDMMYYYY(value) : '-'}</small>
+        <div style={{position: 'relative'}}>
+          <input 
+            type="date" 
+            className={`form-control form-control-sm ${errorClass} ${isOutsideFY ? 'is-invalid' : ''}`}
+            value={value || ''} 
+            onChange={(e) => {
+              const selectedDate = e.target.value;
+              // Validate date is within FY
+              if (selectedDate && fyDates && !isDateWithinFinancialYear(selectedDate, selectedFY)) {
+                setTooltipError({
+                  rowId: row.id,
+                  field: field,
+                  message: `📅 Date must be within FY ${selectedFY} (${formatDateDDMMYYYY(fyDates.fromDate)} to ${formatDateDDMMYYYY(fyDates.toDate)})`
+                });
+                return;
+              }
+              // Clear error if date is valid
+              if (tooltipError?.rowId === row.id && tooltipError?.field === field) {
+                setTooltipError(null);
+              }
+              handleFieldChange(row.id, field, selectedDate);
+            }}
+            onKeyDown={(e) => {
+              // Block all keyboard input - date picker selection only
+              e.preventDefault();
+            }}
+            disabled={isPerformanceFieldDisabled}
+            min={fyDates?.fromDate || ''}
+            max={fyDates?.toDate || ''}
+            style={{
+              fontSize: '0.75rem', 
+              padding: '0.3rem 0.4rem', 
+              fontWeight: '500', 
+              border: isOutsideFY ? '2px solid #dc3545' : '1px solid #dee2e6',
+              backgroundColor: isOutsideFY ? '#fff5f5' : '#fff',
+              cursor: isPerformanceFieldDisabled ? 'not-allowed' : 'pointer'
+            }}
+            title={isMandatory 
+              ? `Mandatory - Select date within FY ${selectedFY} (${formatDateDDMMYYYY(fyDates?.fromDate)} to ${formatDateDDMMYYYY(fyDates?.toDate)})` 
+              : `Optional - Select date within FY ${selectedFY} (${formatDateDDMMYYYY(fyDates?.fromDate)} to ${formatDateDDMMYYYY(fyDates?.toDate)})`}
+          />
+          {isOutsideFY && (
+            <small style={{
+              display: 'block',
+              color: '#dc3545',
+              marginTop: '0.25rem',
+              fontWeight: 'bold',
+              fontSize: '0.7rem'
+            }}>
+              ⚠️ Date outside FY range
+            </small>
           )}
         </div>
       );
@@ -2150,22 +2589,25 @@ const OperationsTargetSettingPage = () => {
           type="number" 
           min="0" 
           max="100" 
-          className="form-control form-control-sm" 
-          placeholder={fieldLabels[field] || '0-100%'}
-          value={value} 
+          className={`form-control form-control-sm ${errorClass}`}
+          placeholder={isMandatory ? 'Required' : 'Optional'}
+          value={value || ''} 
           onChange={(e) => handleFieldChange(row.id, field, e.target.value)}
-          disabled={!row.isEditing}
+          disabled={isPerformanceFieldDisabled}
+          title={isMandatory ? 'Mandatory - higher is better' : 'Optional'}
         />
       );
     } else {
+      // NUMBER type
       return (
         <input 
           type="number" 
-          className="form-control form-control-sm" 
-          placeholder={fieldLabels[field] || 'Enter value'}
-          value={value} 
+          className={`form-control form-control-sm ${errorClass}`}
+          placeholder={isMandatory ? 'Required' : 'Optional'}
+          value={value || ''} 
           onChange={(e) => handleFieldChange(row.id, field, e.target.value)}
-          disabled={!row.isEditing}
+          disabled={isPerformanceFieldDisabled}
+          title={isMandatory ? 'Mandatory - higher is better' : 'Optional'}
         />
       );
     }
@@ -2193,81 +2635,204 @@ const OperationsTargetSettingPage = () => {
     return objective && objective.multipleentries === 'No';
   };
 
-  // Validate performance levels - Excellent is MANDATORY, rest are optional
-  const validatePerformanceLevels = (row) => {
-    const performanceLevels = [
-      { name: 'Excellent', value: row.excellent, key: 'excellent' },
-      { name: 'Very Good', value: row.veryGood, key: 'veryGood' },
-      { name: 'Good', value: row.good, key: 'good' },
-      { name: 'Fair', value: row.fair, key: 'fair' },
-      { name: 'Poor', value: row.poor, key: 'poor' }
-    ];
+  // Helper: Extract financial year dates (from and to)
+  const getFinancialYearDates = (fyString) => {
+    // fyString format: "2026-2027"
+    if (!fyString) return null;
+    const [fromYear, toYear] = fyString.split('-').map(y => y.trim());
+    if (!fromYear || !toYear) return null;
+    // Financial year typically starts April 1st and ends March 31st
+    // So 2026-2027 means April 1, 2026 to March 31, 2027
+    return {
+      fromDate: `${fromYear}-04-01`,
+      toDate: `${toYear}-03-31`
+    };
+  };
 
-    // Excellent field is MANDATORY
+  // Helper: Validate date is within financial year
+  const isDateWithinFinancialYear = (dateStr, fyString) => {
+    if (!dateStr || !fyString) return false;
+    const fyDates = getFinancialYearDates(fyString);
+    if (!fyDates) return false;
+    return dateStr >= fyDates.fromDate && dateStr <= fyDates.toDate;
+  };
+
+  // Helper: Compare two dates (for DATE weight type)
+  const compareDates = (date1, date2) => {
+    // Returns: -1 if date1 < date2, 0 if equal, 1 if date1 > date2
+    if (!date1 || !date2) return 0;
+    if (date1 < date2) return -1;
+    if (date1 > date2) return 1;
+    return 0;
+  };
+
+  // Comprehensive validation for performance level fields
+  const validatePerformanceLevels = (row) => {
+    const weightType = row.selectedWeightType || 'NUMBER';
+    
+    // Check if Excellent is filled (MANDATORY)
     if (!row.excellent && row.excellent !== 0) {
       return {
         isValid: false,
         field: 'excellent',
-        message: '📊 Excellent value is MANDATORY'
+        message: '📊 Excellent is MANDATORY'
       };
     }
 
-    // Count how many fields have values (excluding excellent which is already checked)
-    const enteredLevels = performanceLevels.filter(level => level.value !== null && level.value !== '');
-
-    // Only validate order if 2 or more values are entered
-    if (enteredLevels.length < 2) {
-      return { isValid: true };
-    }
-
-    const weightType = row.selectedWeightType || 'NUMBER';
-
-    // For DATE type: dates should be in ascending order (Excellent < Very Good < Good < Fair < Poor)
-    // Meaning Excellent date is earliest, Poor date is latest
     if (weightType === 'DATE') {
-      for (let i = 0; i < performanceLevels.length - 1; i++) {
-        const current = performanceLevels[i];
-        const next = performanceLevels[i + 1];
+      // ===== DATE TYPE VALIDATION =====
+      // 1. Excellent must be within financial year
+      if (!isDateWithinFinancialYear(row.excellent, selectedFY)) {
+        return {
+          isValid: false,
+          field: 'excellent',
+          message: `📅 Excellent date must be within FY ${selectedFY}`
+        };
+      }
 
-        // Skip if current is empty
-        if (!current.value) continue;
+      // 2. Check order ONLY if other fields are filled: dates should be ascending (Excellent < Very Good < Good < Fair < Poor)
+      // For dates, earlier = better performance
+      // Only validate optional fields if they ARE actually entered
+      
+      let previousValue = row.excellent;
 
-        // If next has value, compare - current date MUST be LESS THAN next date
-        if (next.value) {
-          if (new Date(current.value) >= new Date(next.value)) {
-            return { 
-              isValid: false,
-              field: next.key,
-              message: `📅 ${next.name} must be a LATER date than ${current.name}` 
-            };
-          }
+      // Check Very Good ONLY if entered
+      const veryGoodVal = String(row.veryGood || '').trim();
+      if (veryGoodVal !== '') {
+        if (!isDateWithinFinancialYear(veryGoodVal, selectedFY)) {
+          return {
+            isValid: false,
+            field: 'veryGood',
+            message: `⚠️ Very Good date must be after Excellent (${formatDateDDMMYYYY(row.excellent)})`
+          };
+        }
+        // Very Good should be AFTER Excellent (later date for worse performance)
+        if (compareDates(veryGoodVal, previousValue) <= 0) {
+          return {
+            isValid: false,
+            field: 'veryGood',
+            message: `⚠️ Very Good date must be after Excellent (${formatDateDDMMYYYY(row.excellent)})`
+          };
+        }
+        previousValue = veryGoodVal;
+      }
+
+      // Check Good ONLY if entered
+      const goodVal = String(row.good || '').trim();
+      if (goodVal !== '') {
+        if (!isDateWithinFinancialYear(goodVal, selectedFY)) {
+          return {
+            isValid: false,
+            field: 'good',
+            message: `⚠️ Good date must be after ${veryGoodVal ? 'Very Good' : 'Excellent'} (${formatDateDDMMYYYY(previousValue)})`
+          };
+        }
+        if (compareDates(goodVal, previousValue) <= 0) {
+          return {
+            isValid: false,
+            field: 'good',
+            message: `⚠️ Good date must be after ${veryGoodVal ? 'Very Good' : 'Excellent'} (${formatDateDDMMYYYY(previousValue)})`
+          };
+        }
+        previousValue = goodVal;
+      }
+
+      // Check Fair ONLY if entered
+      const fairVal = String(row.fair || '').trim();
+      if (fairVal !== '') {
+        if (!isDateWithinFinancialYear(fairVal, selectedFY)) {
+          return {
+            isValid: false,
+            field: 'fair',
+            message: `⚠️ Fair date must be after ${goodVal ? 'Good' : (veryGoodVal ? 'Very Good' : 'Excellent')} (${formatDateDDMMYYYY(previousValue)})`
+          };
+        }
+        if (compareDates(fairVal, previousValue) <= 0) {
+          return {
+            isValid: false,
+            field: 'fair',
+            message: `⚠️ Fair date must be after ${goodVal ? 'Good' : (veryGoodVal ? 'Very Good' : 'Excellent')} (${formatDateDDMMYYYY(previousValue)})`
+          };
+        }
+        previousValue = fairVal;
+      }
+
+      // Check Poor ONLY if entered
+      const poorVal = String(row.poor || '').trim();
+      if (poorVal !== '') {
+        if (!isDateWithinFinancialYear(poorVal, selectedFY)) {
+          return {
+            isValid: false,
+            field: 'poor',
+            message: `⚠️ Poor date must be after ${fairVal ? 'Fair' : (goodVal ? 'Good' : (veryGoodVal ? 'Very Good' : 'Excellent'))} (${formatDateDDMMYYYY(previousValue)})`
+          };
+        }
+        if (compareDates(poorVal, previousValue) <= 0) {
+          return {
+            isValid: false,
+            field: 'poor',
+            message: `⚠️ Poor date must be after ${fairVal ? 'Fair' : (goodVal ? 'Good' : (veryGoodVal ? 'Very Good' : 'Excellent'))} (${formatDateDDMMYYYY(previousValue)})`
+          };
         }
       }
     } else {
-      // For NUMBER and PERCENTAGE: values should be in descending order (Excellent > Very Good > Good > Fair > Poor)
-      for (let i = 0; i < performanceLevels.length - 1; i++) {
-        const current = performanceLevels[i];
-        const next = performanceLevels[i + 1];
+      // ===== NUMBER/PERCENTAGE TYPE VALIDATION =====
+      // Excellent is mandatory - convert to number for comparison
+      const excellentVal = parseFloat(row.excellent) || 0;
 
-        // Skip if current is empty
-        if (!current.value && current.value !== 0) continue;
+      // Check Very Good ONLY if filled
+      if (row.veryGood !== null && row.veryGood !== '') {
+        const veryGoodVal = parseFloat(row.veryGood) || 0;
+        if (veryGoodVal >= excellentVal) {
+          return {
+            isValid: false,
+            field: 'veryGood',
+            message: `📈 Very Good (${veryGoodVal}) must be less than Excellent (${excellentVal})`
+          };
+        }
+      }
 
-        // If next has value, compare
-        if (next.value || next.value === 0) {
-          const currentNum = parseFloat(current.value);
-          const nextNum = parseFloat(next.value);
+      // Check Good ONLY if filled
+      if (row.good !== null && row.good !== '') {
+        const goodVal = parseFloat(row.good) || 0;
+        const compareWith = row.veryGood ? parseFloat(row.veryGood) : excellentVal;
+        if (goodVal >= compareWith) {
+          return {
+            isValid: false,
+            field: 'good',
+            message: `✓ Good (${goodVal}) must be less than ${row.veryGood ? 'Very Good' : 'Excellent'} (${compareWith})`
+          };
+        }
+      }
 
-          if (currentNum <= nextNum) {
-            return { 
-              isValid: false,
-              field: next.key,
-              message: `📊 ${next.name} (${nextNum}) must be LOWER than ${current.name} (${currentNum})` 
-            };
-          }
+      // Check Fair ONLY if filled
+      if (row.fair !== null && row.fair !== '') {
+        const fairVal = parseFloat(row.fair) || 0;
+        const compareWith = row.good ? parseFloat(row.good) : (row.veryGood ? parseFloat(row.veryGood) : excellentVal);
+        if (fairVal >= compareWith) {
+          return {
+            isValid: false,
+            field: 'fair',
+            message: `↓ Fair (${fairVal}) must be less than ${row.good ? 'Good' : (row.veryGood ? 'Very Good' : 'Excellent')} (${compareWith})`
+          };
+        }
+      }
+
+      // Check Poor ONLY if filled
+      if (row.poor !== null && row.poor !== '') {
+        const poorVal = parseFloat(row.poor) || 0;
+        const compareWith = row.fair ? parseFloat(row.fair) : (row.good ? parseFloat(row.good) : (row.veryGood ? parseFloat(row.veryGood) : excellentVal));
+        if (poorVal >= compareWith) {
+          return {
+            isValid: false,
+            field: 'poor',
+            message: `✗ Poor (${poorVal}) must be less than ${row.fair ? 'Fair' : (row.good ? 'Good' : (row.veryGood ? 'Very Good' : 'Excellent'))} (${compareWith})`
+          };
         }
       }
     }
 
+    // All validations passed
     return { isValid: true };
   };
 
@@ -2275,6 +2840,23 @@ const OperationsTargetSettingPage = () => {
   const getLastRowForObjective = (objectCode) => {
     const objRows = rows.filter(r => r.objectCode === objectCode);
     return objRows.length > 0 ? objRows[objRows.length - 1] : null;
+  };
+
+  // Check if centre is locked (selected and not empty)
+  const isCentreLocked = () => {
+    return centrecode && centrecode.trim() !== '';
+  };
+
+  // Check if an objective is restricted to HQ only
+  const isObjectiveRestrictedToHQ = (mandatory) => {
+    return mandatory === 'HQ';
+  };
+
+  // Check if current centre is HQ
+  const isCurrentCentreHQ = () => {
+    if (!centrecode) return false;
+    return centrecode === '13' || 
+      (centres.find(c => c.centrecode === centrecode)?.centreshortname === 'HQ');
   };
 
   return (
@@ -2287,52 +2869,153 @@ const OperationsTargetSettingPage = () => {
         </div>
       </div>
 
+  
+
       {/* ===== ERROR & LOADING MESSAGES ===== */}
       {error && <div className="alert alert-danger alert-dismissible fade show"><strong>Error:</strong> {error}</div>}
       {loading && <div className="alert alert-info"><div className="spinner-border spinner-border-sm me-2"></div>Loading data...</div>}
 
-      {/* ===== OPERATION & FINANCIAL YEAR SELECTION ===== */}
-      <div className="card border-0 shadow-sm mb-4">
-        <div className="card-header bg-primary text-white">
-          <h5 className="mb-0">📋 Operation & Period Selection</h5>
+      {/* ===== OPERATION & PERIOD SELECTION ===== */}
+      <div className="row g-2 mb-4 align-items-end">
+        <div className="col-md-5">
+          <label className="form-label fw-semibold mb-2">📋 Select Operation *</label>
+          <div className="btn-group w-100" role="group">
+            <input type="radio" className="btn-check" name="operation" id="targetSetting" value="TARGET_SETTING" checked={operation === 'TARGET_SETTING'} onChange={(e) => setOperation(e.target.value)} />
+            <label className="btn btn-outline-primary fw-semibold" htmlFor="targetSetting" style={{fontSize: '0.9rem', padding: '0.4rem 0.8rem'}}>
+              🎯 Target Setting (2026-2027)
+            </label>
+            
+            <input type="radio" className="btn-check" name="operation" id="targetAchieved" value="TARGET_ACHIEVED" onChange={(e) => setOperation(e.target.value)} disabled />
+            <label className="btn btn-outline-secondary fw-semibold disabled" htmlFor="targetAchieved" style={{fontSize: '0.9rem', padding: '0.4rem 0.8rem'}}>
+              ✅ Target Achieved (2025-2026)
+            </label>
+          </div>
         </div>
-        <div className="card-body">
-          <div className="row g-3">
-            <div className="col-md-6">
-              <label className="form-label fw-semibold">Select Operation *</label>
-              <div className="btn-group w-100" role="group">
-                <input type="radio" className="btn-check" name="operation" id="targetSetting" value="TARGET_SETTING" checked={operation === 'TARGET_SETTING'} onChange={(e) => setOperation(e.target.value)} />
-                <label className="btn btn-outline-primary fw-semibold" htmlFor="targetSetting">
-                  🎯 Target Setting
-                </label>
-                
-                <input type="radio" className="btn-check" name="operation" id="targetAchieved" value="TARGET_ACHIEVED" onChange={(e) => setOperation(e.target.value)} disabled />
-                <label className="btn btn-outline-secondary fw-semibold disabled" htmlFor="targetAchieved">
-                  ✅ Target Achieved (Next Phase)
-                </label>
-              </div>
-              <small className="text-muted d-block mt-1">Currently showing TARGET SETTING mode (Current FY only)</small>
-            </div>
 
-            <div className="col-md-6">
-              <label className="form-label fw-semibold">Financial Year *</label>
-              <select className="form-select form-select-lg" value={selectedFY} onChange={(e) => setSelectedFY(e.target.value)}>
-                {operation === 'TARGET_SETTING' && 
-                  financialYears.slice(0, 1).map(fy => (
-                    <option key={fy.id} value={fy.id}>
-                      {fy.name} (Current Year)
-                    </option>
-                  ))
-                }
+        <div className="col-md-3">
+          <label className="form-label fw-semibold mb-2" style={{
+            color: (!centrecode || centrecode.trim() === '') ? '#dc3545' : '#495057',
+            fontWeight: 'bold'
+          }}>
+            💼 Centre {(!centrecode || centrecode.trim() === '') && <span style={{color: '#dc3545'}}>*REQUIRED</span>}
+          </label>
+          {(String(assignedCentre).toUpperCase() === 'ALL' || Array.isArray(assignedCentre)) ? (
+            <>
+              <select
+                className={`form-select form-select-sm ${(!centrecode || centrecode.trim() === '') ? 'is-invalid border-danger border-3' : ''}`}
+                value={centrecode}
+                onChange={(e) => {
+                  const selectedCentre = e.target.value;
+                  
+                  // Validate centre selection
+                  if (!selectedCentre || selectedCentre.trim() === '') {
+                    setTooltipError({
+                      rowId: null,
+                      field: 'centrecode',
+                      message: '⚠️ Please select a centre before proceeding'
+                    });
+                    return;
+                  }
+                  
+                  // Clear tooltip error
+                  setTooltipError(null);
+                  
+                  // Update centre
+                  setCentrecode(selectedCentre);
+                  
+                  console.log(`📍 Centre changed to: ${selectedCentre}, Fetching saved data...`);
+                  
+                  // Fetch saved rows for selected centre and FY
+                  fetchSavedRowsForCentre(selectedCentre, selectedFY).then(savedRows => {
+                    console.log(`🔄 Setting rows with ${savedRows.length} saved rows`);
+                    
+                    setRows(prev => {
+                      // Remove ALL previously saved rows from other centres
+                      // Keep ONLY template rows (where isSaved === false)
+                      const templateRows = prev.filter(r => !r.isSaved);
+                      
+                      // Combine: new saved rows + empty template
+                      const newRows = [...savedRows, ...templateRows];
+                      
+                      console.log(`📋 Total rows after centre change: ${newRows.length} (${savedRows.length} saved + ${templateRows.length} template)`);
+                      
+                      return newRows;
+                    });
+                  });
+                }}
+                style={{
+                  fontSize: '0.9rem',
+                  borderWidth: (!centrecode || centrecode.trim() === '') ? '3px' : '1px',
+                  backgroundColor: (!centrecode || centrecode.trim() === '') ? '#fff5f5' : '#fff'
+                }}
+              >
+                <option value="">🔴 SELECT CENTRE...</option>
+                {Array.isArray(assignedCentre)
+                  ? // Limit options to assigned centres
+                    centres
+                      .filter(c => assignedCentre.includes(c.centrecode))
+                      .map(c => (
+                        <option key={c.centrecode} value={c.centrecode}>
+                          {`${c.centreshortname} - ${c.centrelongname}`}
+                        </option>
+                      ))
+                  : // 'ALL' case: show all centres
+                    centres.map(c => (
+                      <option key={c.centrecode} value={c.centrecode}>
+                        {`${c.centreshortname} - ${c.centrelongname}`}
+                      </option>
+                    ))}
               </select>
-              <small className="text-muted d-block mt-1">Only current year available for Target Setting</small>
+              {tooltipError?.field === 'centrecode' && (
+                <div className="invalid-feedback d-block" style={{color: '#dc3545', fontSize: '0.85rem', marginTop: '0.25rem', fontWeight: 'bold'}}>
+                  {tooltipError.message}
+                </div>
+              )}
+              {(!centrecode || centrecode.trim() === '') && !tooltipError && (
+                <small style={{color: '#dc3545', display: 'block', marginTop: '0.5rem', fontWeight: 'bold'}}>
+                  👆 Select your centre to proceed
+                </small>
+              )}
+            </>
+          ) : (
+            <div className="alert alert-success mb-0 py-2 px-3" style={{fontSize: '0.9rem', display: 'flex', alignItems: 'center', backgroundColor: '#d4edda', borderColor: '#28a745'}}>
+              <strong>
+                {centres.length > 0
+                  ? (() => {
+                      // If assignedCentre is 'All', show all centre codes
+                      if (String(assignedCentre).toUpperCase() === 'ALL') {
+                        const allCodes = centres.map(c => c.centrecode).join(', ');
+                        return `✅ All (${allCodes})`;
+                      }
+                      // If assignedCentre is an array, show the codes
+                      if (Array.isArray(assignedCentre)) {
+                        const codes = assignedCentre.join(', ');
+                        return `✅ Assigned (${codes})`;
+                      }
+                      // Single centre
+                      const compareCode = centrecode || assignedCentre;
+                      const found = compareCode ? centres.find(c => c.centrecode === compareCode) : null;
+                      if (found) return `✅ ${found.centreshortname} - ${found.centrelongname}`;
+                      return assignedCentre || 'Loading...';
+                    })()
+                  : (centrecode || (Array.isArray(assignedCentre) ? `Multiple centres (${assignedCentre.length})` : assignedCentre) || 'Loading...')
+                }
+              </strong>
+              {/*<small className="ms-2 text-muted">(Role-based)</small>*/}
             </div>
+          )}
+        </div>
+
+        <div className="col-md-4">
+          <label className="form-label fw-semibold mb-2">📅 Financial Year</label>
+          <div className="alert alert-info mb-0 py-2 px-3" style={{fontSize: '0.9rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between'}}>
+            <span>{operation === 'TARGET_SETTING' ? '🎯 2026-2027 (Next Year)' : '✅ 2025-2026 (Current Year)'}</span>
           </div>
         </div>
       </div>
 
       {/* ===== DATA ENTRY TABLE ===== */}
-      <div className="card border-0 shadow-sm mb-4">
+      <div className={`card border-0 shadow-sm mb-4 ${(!centrecode || centrecode.trim() === '') ? 'opacity-50' : ''}`} style={{pointerEvents: (!centrecode || centrecode.trim() === '') ? 'none' : 'auto'}}>
         <div className="card-header bg-success text-white">
           <div className="d-flex justify-content-between align-items-center">
             <h5 className="mb-0">📊 Target Settings by Objective ({rows.length} entries)</h5>
@@ -2340,10 +3023,15 @@ const OperationsTargetSettingPage = () => {
           </div>
         </div>
 
-      
-
         <div className="card-body">
-          {rows.length === 0 ? (
+          {(!centrecode || centrecode.trim() === '') ? (
+            <div className="alert alert-danger text-center py-5" style={{backgroundColor: '#f8d7da', borderColor: '#f5c6cb'}}>
+              <h6 style={{fontSize: '1.2rem', fontWeight: 'bold', color: '#721c24'}}>🔴 Data Entry Disabled</h6>
+              <p style={{color: '#721c24', marginBottom: '0'}}>
+                <strong>Please select a Centre above to start entering target settings.</strong>
+              </p>
+            </div>
+          ) : rows.length === 0 ? (
             <div className="alert alert-info text-center py-4">
               <h6>Loading objectives from API...</h6>
               <p className="mb-0">All objectives will appear as rows once loaded</p>
@@ -2370,7 +3058,19 @@ const OperationsTargetSettingPage = () => {
                   </thead>
 
                   <tbody>
-                    {objectives.map(obj => {
+                    {objectives
+                      .filter(obj => {
+                        // Filter objectives based on HQ mandatory restriction
+                        // If mandatory === 'HQ', only show for centre code 13 or centre short name HQ
+                        if (obj.mandatory === 'HQ') {
+                          const isHQCentre = centrecode === '13' || 
+                            (centres.find(c => c.centrecode === centrecode)?.centreshortname === 'HQ');
+                          return isHQCentre;
+                        }
+                        // Show all other objectives
+                        return true;
+                      })
+                      .map(obj => {
                       const objEntries = rows.filter(r => r.objectCode === obj.objectivecode);
                       const defaultWeight = weights[obj.objectivecode];
                       const allowsMultiple = obj.multipleentries === 'Yes';
@@ -2426,9 +3126,9 @@ const OperationsTargetSettingPage = () => {
                                 {/* ACTION CODE */}
                                 <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.2rem', backgroundColor: '#f8f9fa', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'actionCode' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
-                                    {row.isSaved ? (
-                                      <small style={{fontWeight: '500', color: '#28a745'}}>{row.actionName || row.actionCode || '-'}</small>
-                                    ) : row.multipleEntries ? (
+                                    {row.isSaved && !row.isEditing ? (
+                                      <small>{row.actionName || row.actionCode || '-'}</small>
+                                    ) : row.isEditing && row.multipleEntries ? (
                                       <CreatableSelect
                                         isClearable
                                         isSearchable
@@ -2556,37 +3256,33 @@ const OperationsTargetSettingPage = () => {
                                   </div>
                                 </td>
 
-                                {/* SUCCESS INDICATOR */}
+                                {/* SUCCESS INDICATOR - ALWAYS AVAILABLE DIRECTLY FROM API (NOT DEPENDENT ON ACTION CODE) */}
                                 <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.3rem', width: '20%', backgroundColor: '#f8f9fa', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'successIndicatorCode' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
-                                    {row.isSaved ? (
-                                      <small style={{fontWeight: '500', color: '#28a745'}}>{row.siName ? row.siName : '-'}</small>
+                                    {row.isSaved && !row.isEditing ? (
+                                      <small>{row.siName ? row.siName : '-'}</small>
                                     ) : row.isEditing && row.multipleEntries ? (
                                       <select 
                                         className="form-select form-select-sm"
                                         value={row.successIndicatorCode || ''}
                                         onChange={(e) => {
                                           const siCode = e.target.value;
-                                          handleSIChange(row.id, row.objectCode, row.actionCode, siCode);
+                                          if (siCode) {
+                                            handleSIChange(row.id, row.objectCode, row.actionCode, siCode);
+                                          }
                                         }}
-                                        disabled={!row.actionCode}
+                                        disabled={!isCentreLocked()}
                                         style={{fontSize: '0.8rem', padding: '0.2rem'}}
                                       >
-                                        <option value="">Select...</option>
-                                        {successIndicators[`${row.objectCode}_${row.actionCode}`]?.map(si => (
+                                        <option value="">Select SI...</option>
+                                        {successIndicators[row.objectCode]?.map(si => (
                                           <option key={si.successindicatorcode} value={si.successindicatorcode}>
                                             {si.successindicatordescription}
                                           </option>
                                         )) || []}
                                       </select>
                                     ) : (
-                                      <div>
-                                        {row.siName ? (
-                                          <small>{row.siName}</small>
-                                        ) : (
-                                          <span className="text-muted">-</span>
-                                        )}
-                                      </div>
+                                      <small>{row.siName ? row.siName : '-'}</small>
                                     )}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'successIndicatorCode' && (
                                       <div style={{
@@ -2628,20 +3324,30 @@ const OperationsTargetSettingPage = () => {
                                       className="form-select form-select-sm"
                                       value={row.selectedWeightType || ''}
                                       onChange={(e) => handleWeightTypeChange(row.id, e.target.value)}
-                                      disabled={row.unitPreferred === 'Fixed' || row.multipleEntries}
-                                      style={{fontSize: '0.8rem', padding: '0.2rem'}}
+                                      disabled={row.unitPreferred === 'Fixed' || row.multipleEntries || !isCentreLocked()}
+                                      style={{
+                                        fontSize: '0.8rem', 
+                                        padding: '0.3rem 0.4rem',
+                                        appearance: 'none',
+                                        backgroundImage: 'none',
+                                        paddingRight: '0.3rem',
+                                        cursor: (row.unitPreferred === 'Fixed' || row.multipleEntries || !isCentreLocked()) ? 'not-allowed' : 'pointer',
+                                        backgroundColor: (row.unitPreferred === 'Fixed' || row.multipleEntries || !isCentreLocked()) ? '#e9ecef' : '#fff',
+                                        border: '1px solid #dee2e6',
+                                        borderRadius: '3px'
+                                      }}
                                     >
-                                      <option value="">Select...</option>
+                                      <option value="">📋 Select...</option>
                                       <option value="DATE">📅 Date</option>
-                                      <option value="PERCENTAGE">📊 PERCENTAGE</option>
-                                      <option value="NUMBER">🔢 NUMBER</option>
+                                      <option value="PERCENTAGE">📊 %</option>
+                                      <option value="NUMBER">🔢 Number</option>
                                     </select>
                                   ) : (
-                                    <small>
+                                    <small style={{fontWeight: '600'}}>
                                       {row.selectedWeightType === 'DATE' ? '📅 Date' : 
-                                       row.selectedWeightType === 'PERCENTAGE' ? '📊 PERCENTAGE' : 
-                                       row.selectedWeightType === 'NUMBER' ? '🔢 NUMBER' : 
-                                       '-'} {row.unitPreferred === 'Fixed'}
+                                       row.selectedWeightType === 'PERCENTAGE' ? '📊 %' : 
+                                       row.selectedWeightType === 'NUMBER' ? '🔢 Number' : 
+                                       '—'}
                                     </small>
                                   )}
                                 </td>
@@ -2863,17 +3569,25 @@ const OperationsTargetSettingPage = () => {
                                       )}
                                     </button>
                                     
-                                    {/* ADD ENTRY BUTTON - Only show after row is saved */}
+                                    {/* ADD ENTRY BUTTON - Only show after row is saved - HIGHLIGHTED */}
                                     {row.multipleEntries && row.isSaved && getLastRowForObjective(row.objectCode)?.id === row.id && (
                                       <>
                                         <button 
-                                          className="btn btn-sm btn-outline-info"
+                                          className="btn btn-sm btn-success"
                                           onClick={() => addNewEntryForObjective(row.objectCode)}
                                           disabled={loading}
-                                          title="Add row"
-                                          style={{fontSize: '0.7rem', padding: '0.2rem 0.3rem', minWidth: '24px', flex: '0 0 auto'}}
+                                          title="Add new entry"
+                                          style={{
+                                            fontSize: '0.7rem', 
+                                            padding: '0.3rem 0.5rem', 
+                                            minWidth: '28px', 
+                                            flex: '0 0 auto',
+                                            fontWeight: '600',
+                                            boxShadow: '0 0 8px rgba(40, 167, 69, 0.6)',
+                                            animation: 'pulse 2s infinite'
+                                          }}
                                         >
-                                          <Plus size={11} />
+                                          <Plus size={12} />
                                         </button>
                                       </>
                                     )}
@@ -2977,10 +3691,48 @@ const OperationsTargetSettingPage = () => {
         </div>
       )}
 
-   
+      {/* ===== INSTRUCTIONS ===== */}
+      <div className="alert alert-info border-start border-4 border-info">
+        <h6 className="fw-bold mb-2">📌 How to Use:</h6>
+        <ol className="mb-0">
+          <li><strong style={{color: '#dc3545'}}>🔴 FIRST: Select a Centre</strong> - This is MANDATORY! Select your centre from the dropdown above before doing anything else. Data entry and operations are disabled until you select a centre.</li>
+          <li>Select <strong>Operation</strong> and <strong>Financial Year</strong> at the top</li>
+          <li>All <strong>objectives auto-load</strong> from the API as collapsible rows</li>
+          <li>For objectives that allow <strong>Multiple Entries</strong> (like 001A, 002A, 003A), use the <strong>"Add Entry"</strong> button (visible only after saving the first entry)</li>
+          <li>For objectives with <strong>predefinedactions = "Yes"</strong>, select from dropdown. For <strong>"No"</strong>, enter description inline</li>
+          <li>System auto-generates action codes like "001AA000001" for non-predefined actions</li>
+          <li>Select <strong>Success Indicator</strong> → Weight type (Date/Number/%) loads from API</li>
+          <li><strong>Excellent field is MANDATORY</strong> — rest of the performance levels (Very Good, Good, Fair, Poor) are optional</li>
+          <li>If you enter values, they must follow the correct order: For DATE type, earlier dates for higher performance. For NUMBER/PERCENTAGE, higher values for higher performance</li>
+          <li>Date values display in <strong>dd/mm/yyyy</strong> format for user-friendly viewing</li>
+          <li>Click <strong>"Save"</strong> to save row to backend and freeze all values (Action Code, Success Indicator become read-only)</li>
+          <li>Click <strong>"Edit"</strong> to modify a saved row</li>
+          <li>Click <strong>"Delete"</strong> to remove a row (only for multiple-entry objectives)</li>
+          <li>Once a row is saved, an <strong>"Add Entry"</strong> button appears to add the next entry</li>
+        </ol>
+      </div>
+
+      {/* ===== API REFERENCE ===== */}
+      <div className="alert alert-secondary border-start border-4 border-secondary">
+        <h6 className="fw-bold mb-2">🔗 API Endpoints Being Used:</h6>
+        <ul className="mb-0 font-monospace">
+          <li><code>GET http://localhost:8080/api/objectives</code> - Fetch all objectives</li>
+          <li><code>GET http://localhost:8080/api/actions/objective/{'{objectcode}'}</code> - Fetch actions by objective</li>
+          <li><code>GET http://localhost:8080/api/successindicator/success/{'{objectcode}'}</code> - Fetch success indicators</li>
+          <li><code>GET http://localhost:8080/api/objectives/getWeights/{'{objectcode}'}</code> - Fetch weight type</li>
+          <li><code>POST http://localhost:8080/api/actions/auto</code> - Save user-entered actions with auto-generated codes</li>
+          <li><code>POST http://localhost:8080/api/targets</code> - <strong>CREATE/UPDATE target setting row</strong></li>
+          <li><code>POST http://localhost:8080/api/targets/delete</code> - <strong>DELETE target setting row</strong></li>
+          <li><code>POST http://localhost:8080/api/targets/by-id</code> - <strong>GET target setting by composite ID</strong></li>
+          <li><code>GET http://localhost:8080/api/targets</code> - <strong>GET all target settings</strong></li>
+        </ul>
+      </div>
+
+      {/* ===== CONFIRMATION MODAL - DELETE ONLY ===== */}
+
+
     </div>
   );
 };
 
 export default OperationsTargetSettingPage;
-

@@ -49,8 +49,8 @@ const getUserEmployeeCode = () => {
   }
 };
 
-// Helper function for API calls with error handling
-const apiCall = async (url, options = {}) => {
+// Helper function for API calls with error handling and RBAC headers
+const apiCall = async (url, options = {}, userContext = null) => {
   const employeeCode = getUserEmployeeCode();
   console.log(`API Call by User: ${employeeCode} to URL: ${url}`);
   
@@ -60,6 +60,13 @@ const apiCall = async (url, options = {}) => {
     ...(options.headers || {}),
     'X-USER-ID': employeeCode  // This ensures X-USER-ID is always set
   };
+
+  // Add RBAC headers if userContext is provided
+  if (userContext) {
+    headers['X-Login-Id'] = userContext.loginId || employeeCode;
+    headers['X-Role-Code'] = userContext.roleCode || 'USR';
+    headers['X-Centre-Code'] = userContext.centreCode || '';
+  }
   
   console.log(`Request headers:`, headers);
 
@@ -231,5 +238,44 @@ export const createApiService = (endpoint) => ({
   },
 });
 
-// Screens API endpoints
-export const screensAPI = createApiService('/api/screens');
+// Screens API endpoints with RBAC support
+export const screensAPI = {
+  // Get all screens (admin only)
+  getAll: async () => {
+    return apiCall(`${API_BASE_URL}/api/screens`);
+  },
+
+  // Get assigned screens for current user (requires userContext)
+  getAssigned: async (userContext) => {
+    return apiCall(`${API_BASE_URL}/api/screens/assigned`, {}, userContext);
+  },
+
+  // Get screens by login ID
+  getByLoginId: async (loginId) => {
+    return apiCall(`${API_BASE_URL}/api/screens/user/${loginId}`);
+  },
+
+  getById: async (id) => {
+    return apiCall(`${API_BASE_URL}/api/screens/${id}`);
+  },
+
+  create: async (data) => {
+    return apiCall(`${API_BASE_URL}/api/screens`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  update: async (id, data) => {
+    return apiCall(`${API_BASE_URL}/api/screens/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  delete: async (id) => {
+    return apiCall(`${API_BASE_URL}/api/screens/${id}`, {
+      method: 'DELETE',
+    });
+  },
+};

@@ -3,6 +3,7 @@ import { Home, Users, DollarSign, FileText, Settings, BarChart, Package, LogOut,
 import { userRoleAPI } from './services/api';
 import HomePage from './pages/HomePage';
 import OperationsTargetSettingPage from './pages/OperationsTargetSettingPage';
+import NoRoleAccess from './pages/NoRoleAccess';
 
 // Auth Context
 const AuthContext = createContext(null);
@@ -221,24 +222,35 @@ const AuthProvider = ({ children }) => {
       if (response.ok) {
         const rolesData = await response.json();
         
-        // Extract role codes and centre code from response
+        // Extract role codes and centre codes from response
         let rolesArray = [];
-        let centreCodeFromApi = '';
+        let centreCodesArray = [];
         
         if (Array.isArray(rolesData) && rolesData.length > 0) {
-          // If response is an array, extract roles and centre from first object
-          rolesArray = rolesData.map(item => {
+          // If response is an array, extract all unique roles and centre codes
+          rolesArray = [...new Set(rolesData.map(item => {
             return typeof item === 'object' && item.roleCode ? item.roleCode : item;
-          });
-          // Get centre code from first item if it exists
-          if (typeof rolesData[0] === 'object' && rolesData[0].centreCode) {
-            centreCodeFromApi = rolesData[0].centreCode;
-          }
+          }))];
+          
+          // Extract ALL centre codes (handles both single and multiple centres)
+          centreCodesArray = [...new Set(rolesData
+            .filter(item => typeof item === 'object' && item.centreCode)
+            .map(item => item.centreCode)
+          )];
+          
+          console.log('📍 Extracted centres from API:', centreCodesArray);
         } else if (typeof rolesData === 'object' && rolesData.roleCode) {
           // If response is a single object with roleCode
           rolesArray = [rolesData.roleCode];
-          centreCodeFromApi = rolesData.centreCode || '';
+          if (rolesData.centreCode) {
+            centreCodesArray = [rolesData.centreCode];
+          }
         }
+        
+        // Store centre codes as comma-separated string for multiple centres
+        // Single centre: "01"
+        // Multiple centres: "01,04" or "01,04,13" etc.
+        const centreCodeFromApi = centreCodesArray.length > 0 ? centreCodesArray.join(',') : '';
         
         // Create user object with roles and centre code from API
         const userWithRoles = {
@@ -247,19 +259,24 @@ const AuthProvider = ({ children }) => {
           email: `${loginId}@isro.gov.in`,
           roles: rolesArray.length > 0 ? rolesArray : ['USER'],
           roleCode: rolesArray.length > 0 ? rolesArray[0] : 'USER',
-          centreCode: centreCodeFromApi || 'CENTRE01',
+          centreCode: centreCodeFromApi || 'ALL',  // If no centre assigned, allow all
+          centreCodesArray: centreCodesArray,  // Also store as array for reference
           loginTime: new Date().toISOString()
         };
-        
+        console.log('Fetched roles from API for user', loginId, ':', userWithRoles);
         // Generate secure session token
         const sessionToken = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         
         setUser(userWithRoles);
         localStorage.setItem('pgias_user', JSON.stringify(userWithRoles));
-        // Also store loginId and centreCode separately for pages that read them directly
+        // Also store loginId and centre data separately for pages that read them directly
         try {
           localStorage.setItem('loginId', loginId);
+          // Store centre code as comma-separated string (for backward compatibility)
           localStorage.setItem('centreCode', userWithRoles.centreCode || '');
+          // Store centre codes array as JSON for easy parsing in components
+          localStorage.setItem('centreCodesArray', JSON.stringify(userWithRoles.centreCodesArray || []));
+          
         } catch (e) {
           console.warn('Could not set loginId/centreCode in localStorage', e);
         }
@@ -291,6 +308,7 @@ const AuthProvider = ({ children }) => {
     // Clear the convenience login keys
     localStorage.removeItem('loginId');
     localStorage.removeItem('centreCode');
+    localStorage.removeItem('centreCodesArray');
     sessionStorage.removeItem('pgias_session_token');
     
     if (sessionTimeoutRef.current) {
@@ -517,10 +535,16 @@ const Sidebar = ({ collapsed, setCollapsed, activePage, setActivePage }) => {
   const [genericOpen, setGenericOpen] = useState(false);
   const [operationsOpen, setOperationsOpen] = useState(false);
 
-  // Show dashboard and users for all; genericEntry only for ADM role
-  const pageKeysToShow = user && user.roleCode === 'ADM' 
-    ? ['dashboard', 'users', 'operations', 'genericEntry']
-    : ['dashboard', 'users', 'operations'];
+  // Show dashboard and users for all (always shown)
+  // Add operations if user has 'USR' or 'REV' role
+  // Add genericEntry if user has 'ADM' role
+  const hasADMRole = user && Array.isArray(user.roles) && user.roles.includes('ADM');
+  const hasUSRRole = user && Array.isArray(user.roles) && (user.roles.includes('USR') || user.roles.includes('REV'));
+  
+  // Build pages dynamically based on roles
+  let pageKeysToShow = ['dashboard', 'users'];
+  if (hasUSRRole) pageKeysToShow.push('operations');
+  if (hasADMRole) pageKeysToShow.push('genericEntry');
 
   // Debug log
   //console.log('Sidebar - User:', user);
@@ -549,9 +573,24 @@ const Sidebar = ({ collapsed, setCollapsed, activePage, setActivePage }) => {
             </div>
           </div>
           <div className="d-flex flex-wrap gap-1 mt-2">
-            {user.roles && user.roles.map(role => (
-              <span key={role} className="badge bg-primary">{role}</span>
-            ))}
+            {Array.isArray(user.roles) && user.roles.length > 0 ? (
+              user.roles.map((role, idx) => {
+                // Color code by role
+                let badgeClass = 'bg-primary';
+                if (role === 'USR') badgeClass = 'bg-success';
+                else if (role === 'REV') badgeClass = 'bg-info';
+                else if (role === 'ADM') badgeClass = 'bg-danger';
+                else if (role === 'APR') badgeClass = 'bg-warning text-dark';
+                
+                return (
+                  <span key={`sidebar-role-${idx}`} className={`badge ${badgeClass}`}>
+                    {role}
+                  </span>
+                );
+              })
+            ) : (
+              <span className="badge bg-secondary">No Role</span>
+            )}
           </div>
         </div>
       )}
@@ -569,9 +608,12 @@ const Sidebar = ({ collapsed, setCollapsed, activePage, setActivePage }) => {
                 <div key={pageKey} className="mb-2">
                   <button
                     onClick={() => setOperationsOpen(!operationsOpen)}
-                    className={`btn w-100 text-start d-flex align-items-center justify-content-between ${
-                      collapsed ? 'justify-content-center' : (activePage === pageKey || operationsOpen ? 'btn-primary' : 'btn-outline-secondary text-white')
+                    className={`btn w-100 text-start d-flex align-items-center ${
+                      collapsed ? 'justify-content-center' : 'justify-content-between'
+                    } ${
+                      activePage === pageKey || operationsOpen ? 'btn-primary' : 'btn-outline-secondary text-white'
                     }`}
+                    title={collapsed ? 'Operations' : ''}
                   >
                     <span className="d-flex align-items-center">
                       <Icon size={20} />
@@ -611,9 +653,12 @@ const Sidebar = ({ collapsed, setCollapsed, activePage, setActivePage }) => {
                 <div key={pageKey} className="mb-2">
                   <button
                     onClick={() => setGenericOpen(!genericOpen)}
-                    className={`btn w-100 text-start d-flex align-items-center justify-content-between ${
-                      collapsed ? 'justify-content-center' : (activePage === pageKey ? 'btn-primary' : 'btn-outline-secondary text-white')
+                    className={`btn w-100 text-start d-flex align-items-center ${
+                      collapsed ? 'justify-content-center' : 'justify-content-between'
+                    } ${
+                      activePage === pageKey || genericOpen ? 'btn-primary' : 'btn-outline-secondary text-white'
                     }`}
+                    title={collapsed ? 'Generic Entry' : ''}
                   >
                     <span className="d-flex align-items-center">
                       <Icon size={20} />
@@ -826,8 +871,8 @@ const DashboardPage = ({ user }) => (
             <div className="mb-3">
               <div className="small text-muted">Roles</div>
               <div className="d-flex flex-wrap gap-1">
-                {user.roles && user.roles.map(role => (
-                  <span key={role} className="badge bg-primary">{role}</span>
+                {user.roles && user.roles.map((role, idx) => (
+                  <span key={`dashboard-role-${idx}`} className="badge bg-primary">{role}</span>
                 ))}
               </div>
             </div>
@@ -1036,8 +1081,8 @@ const UsersPage = () => {
                     </td>
                     <td className="px-4 py-3">
                       <div className="d-flex flex-wrap gap-1">
-                        {user.roles.map(role => (
-                          <span key={role} className="badge bg-primary">{role}</span>
+                        {user.roles.map((role, idx) => (
+                          <span key={`user-${user.id}-role-${idx}`} className="badge bg-primary">{role}</span>
                         ))}
                       </div>
                     </td>
@@ -2136,6 +2181,11 @@ const MainLayout = () => {
   const [activePage, setActivePage] = useState('dashboard');
   const { user, logout } = useAuth();
   const [sessionTimeRemaining, setSessionTimeRemaining] = useState(null);
+
+  // Check if user has any role - must have roles array with at least one role
+  if (!user || !Array.isArray(user.roles) || user.roles.length === 0) {
+    return <NoRoleAccess user={user} />;
+  }
 
   // Session timeout warning (show warning at 2 minutes before timeout)
   const SESSION_TIMEOUT = 15 * 60 * 1000;

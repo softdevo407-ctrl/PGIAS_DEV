@@ -1,11 +1,12 @@
 // OPERATIONAL DATA ENTRY - TARGET SETTING PAGE (Backend Integrated)
 // This is a new, completely redesigned page with table-based entry
 
-import React, { useState, useEffect } from 'react';
-import { Plus, Edit, Trash2, CheckCircle, ChevronDown, ChevronRight, X, Search, Loader, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Plus, Edit, Trash2, CheckCircle, ChevronDown, ChevronRight, X, Search, Loader, AlertCircle, Bell, Check, AlertTriangle, Info } from 'lucide-react';
 import CreatableSelect from 'react-select/creatable';
+import Swal from 'sweetalert2';
 
-// Add pulse animation for highlighted buttons
+// Add enhanced animations and styles for better UI
 const pulseStyle = `
   @keyframes pulse {
     0% {
@@ -18,6 +19,70 @@ const pulseStyle = `
       box-shadow: 0 0 8px rgba(40, 167, 69, 0.6);
     }
   }
+  
+  @keyframes slideDown {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes slideInRight {
+    from {
+      opacity: 0;
+      transform: translateX(400px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+  
+  /* Sticky table header styles */
+  .sticky-table-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  }
+  
+  /* Table enhancements */
+  .enhanced-table {
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  
+  .enhanced-table tbody tr:hover {
+    background-color: #f0f8ff !important;
+    transition: background-color 0.2s ease-in-out;
+  }
+  
+  /* Form control enhancements */
+  .form-control-modern, .form-select-modern {
+    border-radius: 6px;
+    border: 1px solid #ddd;
+    transition: all 0.3s ease;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  }
+  
+  .form-control-modern:focus, .form-select-modern:focus {
+    border-color: #0066cc;
+    box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+    outline: none;
+  }
+  
+  /* Badge enhancements */
+  .badge-modern {
+    border-radius: 20px;
+    padding: 0.4rem 0.8rem;
+    font-weight: 500;
+    font-size: 0.85rem;
+  }
 `;
 
 // Inject styles into document head
@@ -27,12 +92,47 @@ if (typeof document !== 'undefined') {
   document.head.appendChild(style);
 }
 
+// ===== SWEETALERT NOTIFICATION HELPER =====
+// SweetAlert is used instead of custom toast system for consistent alerts
+
 const OperationsTargetSettingPage = () => {
+  // SweetAlert notification helper function with clickable buttons
+  const showAlert = useCallback((message, type = 'info', title = '') => {
+    const config = {
+      title: title || (type === 'success' ? 'Success!' : type === 'error' ? 'Error!' : type === 'warning' ? 'Warning!' : 'Info'),
+      text: message,
+      icon: type,
+      confirmButtonColor: type === 'success' ? '#28a745' : type === 'error' ? '#dc3545' : type === 'warning' ? '#ffc107' : '#0066cc',
+      confirmButtonText: 'OK',
+      toast: false,
+      position: 'center',
+      showConfirmButton: true,
+      allowOutsideClick: true,
+      allowEscapeKey: true
+    };
+    Swal.fire(config);
+  }, []);
+
+  // SweetAlert confirmation dialog for user actions (Edit/Delete)
+  const showConfirmAlert = useCallback((title, message) => {
+    return Swal.fire({
+      title: title,
+      text: message,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonColor: '#0066cc',
+      cancelButtonColor: '#6c757d',
+      confirmButtonText: 'Yes, Proceed',
+      cancelButtonText: 'Cancel'
+    });
+  }, []);
+
   // State Management
   const [operation, setOperation] = useState('TARGET_SETTING');
   const [selectedFY, setSelectedFY] = useState('2026-2027');
   const [centrecode, setCentrecode] = useState(''); // Will be populated from user roles/permissions
   const [userRoles, setUserRoles] = useState([]); // Roles assigned to user
+  const [userRole, setUserRole] = useState(''); // Single role (APR = Approver, EMP = Employee)
   const [userid, setUserid] = useState('USER001'); // Default user ID (can be fetched from session/context)
   const [assignedCentre, setAssignedCentre] = useState(null);
   const [centres, setCentres] = useState([]);
@@ -45,6 +145,12 @@ const OperationsTargetSettingPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [expandedObjectives, setExpandedObjectives] = useState({}); // Track which objectives are expanded
+  const [isFormSubmitted, setIsFormSubmitted] = useState(false); // Track if form is already submitted (statuscode T02)
+  
+  // Approver-specific state
+  const [showRemarksModal, setShowRemarksModal] = useState(false);
+  const [remarksData, setRemarksData] = useState({ rowId: null, remarks: '' });
+  const isApprover = userRole === 'APR';
   
   // Action creation state
   const [showActionModal, setShowActionModal] = useState(false);
@@ -98,24 +204,53 @@ const OperationsTargetSettingPage = () => {
   // Initialize user data from localStorage (set by App.jsx on login)
   const initializeUserFromLocalStorage = () => {
     try {
-      // Read loginId and centreCode set by App.jsx during authentication
+      // Read loginId and centre codes from localStorage set by App.jsx during authentication
       const loginId = localStorage.getItem('loginId');
-      const centreCodeFromStorage = localStorage.getItem('centreCode');
+      const centreCodeFromStorage = localStorage.getItem('centreCode'); // Comma-separated string
+      const centreCodesArrayFromStorage = localStorage.getItem('centreCodesArray'); // JSON array
+      const userRoleFromStorage = localStorage.getItem('userRole'); // User role (APR, EMP, etc)
+      
+      console.log('🔑 Retrieved from localStorage - User:', loginId, '| Centre:', centreCodeFromStorage, '| Role:', userRoleFromStorage);
 
-      // Set userid to loginId
+      // Set userid and role
       setUserid(loginId);
-      setAssignedCentre(centreCodeFromStorage);
+      setUserRole(userRoleFromStorage || '');
+      
+      // Parse centreCodesArray if available (takes priority over centreCode string)
+      let parsedCentreArray = null;
+      try {
+        if (centreCodesArrayFromStorage) {
+          parsedCentreArray = JSON.parse(centreCodesArrayFromStorage);
+          console.log('📍 Parsed centre codes array:', parsedCentreArray);
+        }
+      } catch (parseErr) {
+        console.warn('Failed to parse centreCodesArray:', parseErr);
+      }
 
-      // Normalize centre assignment: if 'All' or 'ALL', allow selection; otherwise pre-fill
+      // Use parsed array if available, otherwise fallback to parsing the comma-separated string
+      if (parsedCentreArray && Array.isArray(parsedCentreArray) && parsedCentreArray.length > 0) {
+        setAssignedCentre(parsedCentreArray);
+      } else if (centreCodeFromStorage && (centreCodeFromStorage.includes(',') || centreCodeFromStorage.includes('|') || centreCodeFromStorage.includes(';'))) {
+        const separators = /[,|;]+/;
+        const codes = centreCodeFromStorage.split(separators).map(c => c.trim()).filter(Boolean);
+        setAssignedCentre(codes);
+      } else {
+        setAssignedCentre(centreCodeFromStorage);
+      }
+
+      // Normalize centre assignment: if 'All' or 'ALL', allow selection; otherwise pre-fill or force selection
       if (String(centreCodeFromStorage).toUpperCase() === 'ALL') {
-        setCentrecode(''); // Allow user to select
+        setCentrecode(''); // Allow user to select from all centres
+      } else if (parsedCentreArray?.length > 1 || (centreCodeFromStorage && (centreCodeFromStorage.includes(',') || centreCodeFromStorage.includes('|') || centreCodeFromStorage.includes(';')))) {
+        // Multiple assigned centres -> force user to pick one
+        setCentrecode('');
       } else {
         setCentrecode(centreCodeFromStorage);
       }
 
-      console.log('👤 Initialized from localStorage - User:', loginId, '| Centre:', centreCodeFromStorage);
+      console.log('👤 Initialized from localStorage - User:', loginId, '| Centre(s):', centreCodeFromStorage);
       
-      // Fetch centres list for dropdown (in case user assigned to 'ALL')
+      // Fetch centres list for dropdown
       fetchCentres();
     } catch (err) {
       console.error('Failed to initialize user from localStorage:', err);
@@ -179,7 +314,12 @@ const OperationsTargetSettingPage = () => {
           isEditing: true,
           isSaved: false,
           hasChanges: false,  // Track if row has unsaved changes after being saved
-          originalValues: null  // Store original values when entering edit mode
+          originalValues: null,  // Store original values when entering edit mode
+          // Approver-specific fields
+          approvalStatus: 'PENDING',  // PENDING, APPROVED, REJECTED
+          approvalRemarks: '',  // Remarks for rejection or approval
+          approvedBy: null,  // User ID of approver
+          approvedAt: null  // Timestamp of approval/rejection
         };
       });
       setRows(newRows);
@@ -275,6 +415,34 @@ const OperationsTargetSettingPage = () => {
     }
   }, [tooltipError]);
 
+  // ===== DYNAMIC TOTAL WEIGHT CALCULATION =====
+  // Update total weights whenever rows change (real-time calculation)
+  useEffect(() => {
+    const updatedTotalWeights = {};
+    objectives.forEach(obj => {
+      const totalWeight = calculateTotalWeightForObjective(obj.objectivecode);
+      if (totalWeight) {
+        updatedTotalWeights[obj.objectivecode] = totalWeight;
+      }
+    });
+    setTotalWeights(updatedTotalWeights);
+  }, [rows, objectives]);
+
+  // ===== CHECK FOR T02 STATUSCODE (SUBMITTED STAGE) =====
+  // Lock form if any row has statuscode = T02 (already submitted)
+  useEffect(() => {
+    if (rows && rows.length > 0) {
+      const hasT02Status = rows.some(row => row.statuscode === 'T02');
+      if (hasT02Status) {
+        setIsFormSubmitted(true);
+       // showAlert('This form has already been submitted (T02 status). Form is now locked.', 'info', 'Form Locked');
+        console.log('🔒 Form locked - Status T02 detected (submitted stage)');
+      } else {
+        setIsFormSubmitted(false);
+      }
+    }
+  }, [rows, centrecode, selectedFY]);
+
   // ===== API CALLS ====="
   
   // Fetch Objectives from: http://localhost:8080/api/objectives
@@ -341,7 +509,7 @@ const OperationsTargetSettingPage = () => {
   // Save inline action (user-entered action with auto-generated code)
   const saveInlineAction = async (rowId, objectCode, actionDescription) => {
     if (!actionDescription?.trim()) {
-      alert('❌ Please enter an action description');
+      showAlert('Please enter an action description', 'error', 'Validation Error');
       return;
     }
 
@@ -379,7 +547,7 @@ const OperationsTargetSettingPage = () => {
         
         // Check for duplicate description error
         if (errorMessage.includes('already exists')) {
-          alert(`⚠️ ${errorMessage}\n\nPlease enter a different action description.`);
+          showAlert(`${errorMessage} - Please enter a different action description`, 'warning', 'Action Exists');
         } else {
           throw new Error(errorMessage);
         }
@@ -416,9 +584,9 @@ const OperationsTargetSettingPage = () => {
       setInlineActionRows(prev => ({...prev, [rowId]: false}));
       setNewActionForm({ actiondescription: '', actionname: '' });
 
-      alert('✅ Action created successfully!');
+      showAlert('Action created successfully!', 'success', 'Success');
     } catch (err) {
-      alert('❌ Error saving action: ' + err.message);
+      showAlert('Error saving action: ' + err.message, 'error', 'Error');
       console.error(err);
     } finally {
       setLoading(false);
@@ -563,7 +731,8 @@ const OperationsTargetSettingPage = () => {
           isSaved: true,
           hasChanges: false,
           originalValues: null,
-          weightperunitofactivity: item.weightperunitofactivity || 0
+          weightperunitofactivity: item.weightperunitofactivity || 0,
+          statuscode: item.statuscode || 'T01'  // T01 = target setting, T02 = submitted
         };
         
         console.log(`  📍 Row ${idx + 1}: ${mappedRow.objectCode} | Action: ${mappedRow.actionCode} | SI: ${mappedRow.successIndicatorCode} | MultipleEntries: ${mappedRow.multipleEntries} | Excellent: ${mappedRow.excellent}`);
@@ -639,12 +808,13 @@ const OperationsTargetSettingPage = () => {
           weightInfo: null,
           selectedWeightType: item.unit === 'Number' ? 'NUMBER' : item.unit === 'Percentage' ? 'PERCENTAGE' : item.unit === 'Date' ? 'DATE' : 'NUMBER',
           weightValue: item.weightperunitofactivity ? { value: item.weightperunitofactivity, unit: '' } : null,
-          // Performance level target criteria
-          excellent: item.targetcriteriavalueexcellent || '',
-          veryGood: item.targetcriteriavalueverygood || '',
-          good: item.targetcriteriavaluegood || '',
-          fair: item.targetcriteriavaluefair || '',
-          poor: item.targetcriteriavaluepoor || '',
+          // Performance level target criteria - START EMPTY for single-entry objectives
+          // User must manually enter values
+          excellent: '',
+          veryGood: '',
+          good: '',
+          fair: '',
+          poor: '',
           isEditing: true,   // All fields editable
           isSaved: false,     // Allow editing
           hasChanges: false,
@@ -700,6 +870,7 @@ const OperationsTargetSettingPage = () => {
       const selectedCentreObj = centres.find(c => c.centrecode === centrecode) || null;
 
       // Build the complete payload matching the database table structure
+      // Only include optional performance level fields if they have actual values
       const payload = {
         financialyear: fyYear,
         centrecode: centrecode,
@@ -714,10 +885,11 @@ const OperationsTargetSettingPage = () => {
         targetsetvalue: row.excellent || '', // Primary target is Excellent
         weightperunitofactivity: row.weightValue?.value || 0,
         targetcriteriavalueexcellent: row.excellent || '',
-        targetcriteriavalueverygood: row.veryGood || '',
-        targetcriteriavaluegood: row.good || '',
-        targetcriteriavaluefair: row.fair || '',
-        targetcriteriavaluepoor: row.poor || '',
+        // Only send optional fields if they have values
+        targetcriteriavalueverygood: (row.veryGood && String(row.veryGood).trim() !== '') ? row.veryGood : null,
+        targetcriteriavaluegood: (row.good && String(row.good).trim() !== '') ? row.good : null,
+        targetcriteriavaluefair: (row.fair && String(row.fair).trim() !== '') ? row.fair : null,
+        targetcriteriavaluepoor: (row.poor && String(row.poor).trim() !== '') ? row.poor : null,
         achievementstatuscode: null,
         achievementstatusdescription: null,
         validforpercentage: row.selectedWeightType === 'PERCENTAGE' ? 'Yes' : 'No',
@@ -737,15 +909,31 @@ const OperationsTargetSettingPage = () => {
 
       console.log('📝 Row payload to save:', payload);
       
-      // Call the backend API to save
-      const response = await fetch('http://localhost:8080/api/targets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      // Determine if this is an UPDATE or CREATE
+      const isUpdate = row.isSaved && (row.hasChanges || row.isEditing);
+      let response;
+      
+      if (isUpdate) {
+        // UPDATE: Use PATCH with path variables
+        const updateUrl = `http://localhost:8080/api/targets/${fyYear}/${centrecode}/${row.objectCode}/${row.actionCode}/${row.successIndicatorCode}`;
+        console.log('🔄 Updating row via PATCH:', updateUrl);
+        response = await fetch(updateUrl, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      } else {
+        // CREATE: Use POST
+        console.log('➕ Creating new row via POST');
+        response = await fetch('http://localhost:8080/api/targets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      }
       
       if (!response.ok) {
-        let errorMessage = 'Failed to save row';
+        let errorMessage = isUpdate ? 'Failed to update row' : 'Failed to save row';
         try {
           const errorData = await response.json();
           errorMessage = errorData.message || errorData.error || errorMessage;
@@ -757,8 +945,8 @@ const OperationsTargetSettingPage = () => {
       }
       
       const result = await response.json();
-      console.log('✅ Row saved successfully:', result);
-      return "Row saved successfully";
+      console.log(isUpdate ? '✅ Row updated successfully:' : '✅ Row saved successfully:', result);
+      return isUpdate ? "Row updated successfully" : "Row saved successfully";
     } catch (err) {
       throw new Error('Error saving row: ' + err.message);
     }
@@ -803,12 +991,13 @@ const OperationsTargetSettingPage = () => {
             successIndicatorCode: siCode,  // Store CODE
             siName: si?.successindicatordescription || '',  // Display DESCRIPTION
             siDescription: si?.successindicatordescription || '',
-            // For multiple entries: Load default values from SI; for single-entry: let user enter
-            excellent: isMultipleEntries ? (si?.targetcriteriavalueexcellent || '') : '',
-            veryGood: isMultipleEntries ? (si?.targetcriteriavalueverygood || '') : '',
-            good: isMultipleEntries ? (si?.targetcriteriavaluegood || '') : '',
-            fair: isMultipleEntries ? (si?.targetcriteriavaluefair || '') : '',
-            poor: isMultipleEntries ? (si?.targetcriteriavaluepoor || '') : '',
+            // For multi-entry: DO NOT auto-fill performance levels - let user enter them
+            // For single-entry: DO NOT auto-fill either - let user enter them
+            excellent: '',
+            veryGood: '',
+            good: '',
+            fair: '',
+            poor: '',
             weightValue: null  // Reset weight value, will be fetched
           }
         : row
@@ -852,16 +1041,29 @@ const OperationsTargetSettingPage = () => {
       return row;
     }));
     
-    // Clear tooltip error when user starts editing
-    if (tooltipError?.rowId === rowId) {
+    // Clear tooltip error when user starts editing this field
+    if (tooltipError?.rowId === rowId && tooltipError?.field === field) {
       setTooltipError(null);
     }
   };
 
   // Save row to backend and freeze it
   const saveRow = async (row) => {
+    // Show confirmation before saving
+    const confirmResult = await showConfirmAlert('Save Entry?', 'Are you sure want to save this entry?');
+    if (!confirmResult.isConfirmed) {
+      return; // User cancelled
+    }
+
+    // Check if form is already submitted (T02 status)
+    if (isFormSubmitted) {
+      showAlert('Form is locked - Already submitted (T02 status). Cannot edit.', 'warning', 'Form Locked');
+      return;
+    }
+    
     // Validate centre is selected
     if (!centrecode || centrecode.trim() === '') {
+      showAlert('Please select a centre before saving', 'warning', 'Centre Required');
       setTooltipError({
         rowId: row.id,
         field: 'centrecode',
@@ -924,9 +1126,9 @@ const OperationsTargetSettingPage = () => {
       setRows(rows.map(r =>
         r.id === row.id ? { ...r, isEditing: false, isSaved: true, hasChanges: false } : r
       ));
-      alert('✅ Row saved successfully!');
+      showAlert('Row saved successfully!', 'success', 'Success');
     } catch (err) {
-      alert('❌ Error: ' + err.message);
+      showAlert('Error: ' + err.message, 'error', 'Error');
     } finally {
       setLoading(false);
     }
@@ -934,42 +1136,35 @@ const OperationsTargetSettingPage = () => {
 
   // Show alert before editing a saved row
   const requestEditRow = (rowId) => {
-    const confirmed = window.confirm('Are you sure you want to edit this row?');
-    if (confirmed) {
-      setRows(rows.map(r => {
-        if (r.id === rowId) {
-          return { 
-            ...r, 
-            isEditing: true,
-            hasChanges: false,
-            originalValues: { ...r }
-          };
-        }
-        return r;
-      }));
-    }
+    showConfirmAlert('Edit Row?', 'Are you sure you want to edit this row?').then((result) => {
+      if (result.isConfirmed) {
+        setRows(rows.map(r => {
+          if (r.id === rowId) {
+            return { 
+              ...r, 
+              isEditing: true,
+              hasChanges: false,
+              originalValues: { ...r }
+            };
+          }
+          return r;
+        }));
+      }
+    });
   };
 
   // Delete Row from Backend: POST http://localhost:8080/api/targets/delete
   const deleteRowFromBackend = async (row) => {
     try {
-      const fyYear = selectedFY.replace('FY', '').replace('-', '/'); // Convert FY2024-25 to 2024/25
+      const fyYear = selectedFY; // Use as-is (format: 2026-2027)
       
-      // Build the composite ID that matches the database primary key
-      const id = {
-        financialyear: fyYear,
-        centrecode: centrecode,
-        objectivecode: row.objectCode,
-        actioncode: row.actionCode,
-        successindicatorcode: row.successIndicatorCode
-      };
-
-      console.log('🗑️ Deleting row with ID:', id);
+      // Build DELETE URL with path variables
+      const deleteUrl = `http://localhost:8080/api/targets/${fyYear}/${centrecode}/${row.objectCode}/${row.actionCode}/${row.successIndicatorCode}`;
+      console.log('🗑️ Deleting row via DELETE:', deleteUrl);
       
-      const response = await fetch('http://localhost:8080/api/targets/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(id)
+      const response = await fetch(deleteUrl, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
       });
       
       if (!response.ok) {
@@ -993,35 +1188,185 @@ const OperationsTargetSettingPage = () => {
 
   // Show confirmation dialog before deleting a row
   const requestDeleteRow = (rowId) => {
+    // Check if form is locked
+    if (isFormSubmitted) {
+      showAlert('Form is locked - Already submitted (T02 status). Cannot delete.', 'warning', 'Form Locked');
+      return;
+    }
+    
     const row = rows.find(r => r.id === rowId);
     if (!row) return;
     
-    if (window.confirm('Are you sure you want to delete this entry?')) {
+    showConfirmAlert('Delete Entry?', 'Are you sure you want to delete this entry? This action cannot be undone.').then((result) => {
+      if (result.isConfirmed) {
+        setLoading(true);
+        deleteRowFromBackend(row)
+          .then(() => {
+            setRows(rows.filter(r => r.id !== rowId));
+            showAlert('Row deleted successfully!', 'success', 'Success');
+          })
+          .catch(err => {
+            showAlert('Error: ' + err.message, 'error', 'Error');
+          })
+          .finally(() => {
+            setLoading(false);
+          });
+      }
+    });
+  };
+
+  // ===== APPROVER WORKFLOW FUNCTIONS (Only for APR role) =====
+  
+  // Request approval for a row
+  const requestApproveRow = (rowId) => {
+    const row = rows.find(r => r.id === rowId);
+    if (!row) return;
+
+    showConfirmAlert('Approve Entry?', 'Are you sure want to approve this entry?').then((result) => {
+      if (result.isConfirmed) {
+        approveRowToBackend(row);
+      }
+    });
+  };
+
+  // Approve row to backend
+  const approveRowToBackend = async (row) => {
+    try {
       setLoading(true);
-      deleteRowFromBackend(row)
-        .then(() => {
-          setRows(rows.filter(r => r.id !== rowId));
-          alert('✅ Row deleted successfully!');
-        })
-        .catch(err => {
-          alert('❌ Error: ' + err.message);
-        })
-        .finally(() => {
-          setLoading(false);
-        });
+      const fyYear = selectedFY;
+
+      const payload = {
+        financialyear: fyYear,
+        centrecode: centrecode,
+        objectivecode: row.objectCode,
+        actioncode: row.actionCode,
+        successindicatorcode: row.successIndicatorCode,
+        approvalstatus: 'APPROVED',
+        approvalremarks: '',
+        approvedby: userid,
+        approvedat: new Date().toISOString()
+      };
+
+      const response = await fetch('http://localhost:8080/api/targets/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to approve row';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+
+      // Update row status
+      setRows(rows.map(r =>
+        r.id === row.id 
+          ? { ...r, approvalStatus: 'APPROVED', approvedBy: userid, approvedAt: new Date().toISOString() } 
+          : r
+      ));
+
+      showAlert('Entry approved successfully!', 'success', 'Success');
+    } catch (err) {
+      showAlert('Error: ' + err.message, 'error', 'Error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Request rejection with remarks
+  const requestRejectRow = (rowId) => {
+    const row = rows.find(r => r.id === rowId);
+    if (!row) return;
+
+    // Show remarks modal
+    setRemarksData({ rowId, remarks: '' });
+    setShowRemarksModal(true);
+  };
+
+  // Submit rejection with remarks
+  const submitRejectWithRemarks = async () => {
+    if (!remarksData.remarks || remarksData.remarks.trim() === '') {
+      showAlert('Please enter rejection remarks', 'warning', 'Remarks Required');
+      return;
+    }
+
+    const row = rows.find(r => r.id === remarksData.rowId);
+    if (!row) return;
+
+    try {
+      setLoading(true);
+      const fyYear = selectedFY;
+
+      const payload = {
+        financialyear: fyYear,
+        centrecode: centrecode,
+        objectivecode: row.objectCode,
+        actioncode: row.actionCode,
+        successindicatorcode: row.successIndicatorCode,
+        approvalstatus: 'REJECTED',
+        approvalremarks: remarksData.remarks.trim(),
+        approvedby: userid,
+        approvedat: new Date().toISOString()
+      };
+
+      const response = await fetch('http://localhost:8080/api/targets/reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to reject row';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+
+      // Update row status
+      setRows(rows.map(r =>
+        r.id === row.id 
+          ? { ...r, approvalStatus: 'REJECTED', approvalRemarks: remarksData.remarks.trim(), approvedBy: userid, approvedAt: new Date().toISOString() } 
+          : r
+      ));
+
+      setShowRemarksModal(false);
+      setRemarksData({ rowId: null, remarks: '' });
+      showAlert('Entry rejected with remarks!', 'success', 'Success');
+    } catch (err) {
+      showAlert('Error: ' + err.message, 'error', 'Error');
+    } finally {
+      setLoading(false);
     }
   };
 
   // Add a new entry row for an objective that allows multiple entries
   // Inserts the new entry directly below the last existing entry for that objective
   const addNewEntryForObjective = async (objectCode) => {
+    // Check if form is locked
+    if (isFormSubmitted) {
+      showAlert('Form is locked - Already submitted (T02 status). Cannot add new entries.', 'warning', 'Form Locked');
+      return;
+    }
+    
     // Get metadata from objectives array
     const objective = objectives.find(o => o.objectivecode === objectCode);
     if (!objective) return;
     
     const allowsMultiple = objective.multipleentries === 'Yes';
     if (!allowsMultiple) {
-      alert('❌ This objective does not allow multiple entries');
+      showAlert('This objective does not allow multiple entries', 'info', 'Not Allowed');
       return;
     }
 
@@ -1130,10 +1475,15 @@ const OperationsTargetSettingPage = () => {
     // AFTER SAVING: All fields are disabled (frozen) until Edit is clicked
     if (row.isSaved && !row.isEditing) {
       // For DATE type: show formatted date, otherwise show value as-is
-      const displayValue = weightType === 'DATE' ? formatDateDDMMYYYY(value) : value;
+      let displayValue = '';
+      if (weightType === 'DATE') {
+        displayValue = value ? formatDateDDMMYYYY(value) : '-';
+      } else {
+        displayValue = value !== null && value !== '' ? value : '-';
+      }
       return (
         <small className="text-muted">
-          {displayValue !== null && displayValue !== '' ? displayValue : '-'}
+          {displayValue}
         </small>
       );
     }
@@ -1145,7 +1495,10 @@ const OperationsTargetSettingPage = () => {
     //   - Multi-entry: DISABLED until SI selected (unless editing, then check SI)
     let isPerformanceFieldDisabled = false;
     
-    if (row.isSaved && !row.isEditing) {
+    // If form is submitted (T02 status), ALL fields are disabled
+    if (isFormSubmitted) {
+      isPerformanceFieldDisabled = true;
+    } else if (row.isSaved && !row.isEditing) {
       // Saved row, not in edit mode: DISABLED for all
       isPerformanceFieldDisabled = true;
     } else if (!row.isSaved) {
@@ -1168,17 +1521,74 @@ const OperationsTargetSettingPage = () => {
       poor: 'Poor'
     };
 
-    // For DATE type: date picker only, no manual text entry
+    // Determine if field is mandatory
+    const isMandatory = field === 'excellent';
+    
+    // Check if there's an error for THIS specific field
+    const hasError = tooltipError?.rowId === row.id && tooltipError?.field === field;
+    const errorClass = hasError ? 'is-invalid' : '';
+
+    // Get financial year date range for date validation
+    const fyDates = getFinancialYearDates(selectedFY);
+
+    // For DATE type: date picker with FY restrictions
     if (weightType === 'DATE') {
+      const isOutsideFY = value && fyDates && (value < fyDates.fromDate || value > fyDates.toDate);
+      
       return (
-        <input 
-          type="date" 
-          className="form-control form-control-sm" 
-          value={value || ''} 
-          onChange={(e) => handleFieldChange(row.id, field, e.target.value)}
-          disabled={isPerformanceFieldDisabled}
-          style={{fontSize: '0.7rem', padding: '0.2rem'}}
-        />
+        <div style={{position: 'relative'}}>
+          <input 
+            type="date" 
+            className={`form-control form-control-sm ${errorClass} ${isOutsideFY ? 'is-invalid' : ''}`}
+            value={value || ''} 
+            onChange={(e) => {
+              const selectedDate = e.target.value;
+              // Validate date is within FY
+              if (selectedDate && fyDates && !isDateWithinFinancialYear(selectedDate, selectedFY)) {
+                setTooltipError({
+                  rowId: row.id,
+                  field: field,
+                  message: `📅 Date must be within FY ${selectedFY} (${formatDateDDMMYYYY(fyDates.fromDate)} to ${formatDateDDMMYYYY(fyDates.toDate)})`
+                });
+                return;
+              }
+              // Clear error if date is valid
+              if (tooltipError?.rowId === row.id && tooltipError?.field === field) {
+                setTooltipError(null);
+              }
+              handleFieldChange(row.id, field, selectedDate);
+            }}
+            onKeyDown={(e) => {
+              // Block all keyboard input - date picker selection only
+              e.preventDefault();
+            }}
+            disabled={isPerformanceFieldDisabled}
+            min={fyDates?.fromDate || ''}
+            max={fyDates?.toDate || ''}
+            style={{
+              fontSize: '0.75rem', 
+              padding: '0.3rem 0.4rem', 
+              fontWeight: '500', 
+              border: isOutsideFY ? '2px solid #dc3545' : '1px solid #dee2e6',
+              backgroundColor: isOutsideFY ? '#fff5f5' : '#fff',
+              cursor: isPerformanceFieldDisabled ? 'not-allowed' : 'pointer'
+            }}
+            title={isMandatory 
+              ? `Mandatory - Select date within FY ${selectedFY} (${formatDateDDMMYYYY(fyDates?.fromDate)} to ${formatDateDDMMYYYY(fyDates?.toDate)})` 
+              : `Optional - Select date within FY ${selectedFY} (${formatDateDDMMYYYY(fyDates?.fromDate)} to ${formatDateDDMMYYYY(fyDates?.toDate)})`}
+          />
+          {isOutsideFY && (
+            <small style={{
+              display: 'block',
+              color: '#dc3545',
+              marginTop: '0.25rem',
+              fontWeight: 'bold',
+              fontSize: '0.7rem'
+            }}>
+              ⚠️ Date outside FY range
+            </small>
+          )}
+        </div>
       );
     } else if (weightType === 'PERCENTAGE') {
       return (
@@ -1186,24 +1596,25 @@ const OperationsTargetSettingPage = () => {
           type="number" 
           min="0" 
           max="100" 
-          className="form-control form-control-sm" 
-          placeholder={fieldLabels[field] || '0-100%'}
-          value={value} 
+          className={`form-control form-control-sm ${errorClass}`}
+          placeholder={isMandatory ? 'Required' : 'Optional'}
+          value={value || ''} 
           onChange={(e) => handleFieldChange(row.id, field, e.target.value)}
           disabled={isPerformanceFieldDisabled}
-          title={isPerformanceFieldDisabled ? (isSingleEntry ? '' : 'Select Success Indicator first to enable') : ''}
+          title={isMandatory ? 'Mandatory - higher is better' : 'Optional'}
         />
       );
     } else {
+      // NUMBER type
       return (
         <input 
           type="number" 
-          className="form-control form-control-sm" 
-          placeholder={fieldLabels[field] || 'Enter value'}
-          value={value} 
+          className={`form-control form-control-sm ${errorClass}`}
+          placeholder={isMandatory ? 'Required' : 'Optional'}
+          value={value || ''} 
           onChange={(e) => handleFieldChange(row.id, field, e.target.value)}
           disabled={isPerformanceFieldDisabled}
-          title={isPerformanceFieldDisabled ? (isSingleEntry ? '' : 'Select Success Indicator first to enable') : ''}
+          title={isMandatory ? 'Mandatory - higher is better' : 'Optional'}
         />
       );
     }
@@ -1211,8 +1622,10 @@ const OperationsTargetSettingPage = () => {
 
   // Calculate total weight from saved rows only
   const calculateTotalWeightForObjective = (objectCode) => {
-    const savedRows = rows.filter(r => r.objectCode === objectCode && r.isSaved);
-    const totalWeight = savedRows.reduce((sum, row) => {
+    // Include BOTH saved rows AND unsaved rows that have a weight value selected
+    // This makes total weights update dynamically when SI is selected (before saving)
+    const relevantRows = rows.filter(r => r.objectCode === objectCode && (r.isSaved || r.weightValue));
+    const totalWeight = relevantRows.reduce((sum, row) => {
       // Try weightperunitofactivity first, then weightValue.value, default to 0
       let weight = 0;
       if (row.weightperunitofactivity && typeof row.weightperunitofactivity === 'number') {
@@ -1231,9 +1644,42 @@ const OperationsTargetSettingPage = () => {
     return objective && objective.multipleentries === 'No';
   };
 
-  // Validate performance levels - ONLY Excellent is MANDATORY
+  // Helper: Extract financial year dates (from and to)
+  const getFinancialYearDates = (fyString) => {
+    // fyString format: "2026-2027"
+    if (!fyString) return null;
+    const [fromYear, toYear] = fyString.split('-').map(y => y.trim());
+    if (!fromYear || !toYear) return null;
+    // Financial year typically starts April 1st and ends March 31st
+    // So 2026-2027 means April 1, 2026 to March 31, 2027
+    return {
+      fromDate: `${fromYear}-04-01`,
+      toDate: `${toYear}-03-31`
+    };
+  };
+
+  // Helper: Validate date is within financial year
+  const isDateWithinFinancialYear = (dateStr, fyString) => {
+    if (!dateStr || !fyString) return false;
+    const fyDates = getFinancialYearDates(fyString);
+    if (!fyDates) return false;
+    return dateStr >= fyDates.fromDate && dateStr <= fyDates.toDate;
+  };
+
+  // Helper: Compare two dates (for DATE weight type)
+  const compareDates = (date1, date2) => {
+    // Returns: -1 if date1 < date2, 0 if equal, 1 if date1 > date2
+    if (!date1 || !date2) return 0;
+    if (date1 < date2) return -1;
+    if (date1 > date2) return 1;
+    return 0;
+  };
+
+  // Comprehensive validation for performance level fields
   const validatePerformanceLevels = (row) => {
-    // Check ONLY if Excellent is filled
+    const weightType = row.selectedWeightType || 'NUMBER';
+    
+    // Check if Excellent is filled (MANDATORY)
     if (!row.excellent && row.excellent !== 0) {
       return {
         isValid: false,
@@ -1242,7 +1688,160 @@ const OperationsTargetSettingPage = () => {
       };
     }
 
-    // Everything else is optional - SAVE
+    if (weightType === 'DATE') {
+      // ===== DATE TYPE VALIDATION =====
+      // 1. Excellent must be within financial year
+      if (!isDateWithinFinancialYear(row.excellent, selectedFY)) {
+        return {
+          isValid: false,
+          field: 'excellent',
+          message: `📅 Excellent date must be within FY ${selectedFY}`
+        };
+      }
+
+      // 2. Check order ONLY if other fields are filled: dates should be ascending (Excellent < Very Good < Good < Fair < Poor)
+      // For dates, earlier = better performance
+      // Only validate optional fields if they ARE actually entered
+      
+      let previousValue = row.excellent;
+
+      // Check Very Good ONLY if entered
+      const veryGoodVal = String(row.veryGood || '').trim();
+      if (veryGoodVal !== '') {
+        if (!isDateWithinFinancialYear(veryGoodVal, selectedFY)) {
+          return {
+            isValid: false,
+            field: 'veryGood',
+            message: `⚠️ Very Good date must be after Excellent (${formatDateDDMMYYYY(row.excellent)})`
+          };
+        }
+        // Very Good should be AFTER Excellent (later date for worse performance)
+        if (compareDates(veryGoodVal, previousValue) <= 0) {
+          return {
+            isValid: false,
+            field: 'veryGood',
+            message: `⚠️ Very Good date must be after Excellent (${formatDateDDMMYYYY(row.excellent)})`
+          };
+        }
+        previousValue = veryGoodVal;
+      }
+
+      // Check Good ONLY if entered
+      const goodVal = String(row.good || '').trim();
+      if (goodVal !== '') {
+        if (!isDateWithinFinancialYear(goodVal, selectedFY)) {
+          return {
+            isValid: false,
+            field: 'good',
+            message: `⚠️ Good date must be after ${veryGoodVal ? 'Very Good' : 'Excellent'} (${formatDateDDMMYYYY(previousValue)})`
+          };
+        }
+        if (compareDates(goodVal, previousValue) <= 0) {
+          return {
+            isValid: false,
+            field: 'good',
+            message: `⚠️ Good date must be after ${veryGoodVal ? 'Very Good' : 'Excellent'} (${formatDateDDMMYYYY(previousValue)})`
+          };
+        }
+        previousValue = goodVal;
+      }
+
+      // Check Fair ONLY if entered
+      const fairVal = String(row.fair || '').trim();
+      if (fairVal !== '') {
+        if (!isDateWithinFinancialYear(fairVal, selectedFY)) {
+          return {
+            isValid: false,
+            field: 'fair',
+            message: `⚠️ Fair date must be after ${goodVal ? 'Good' : (veryGoodVal ? 'Very Good' : 'Excellent')} (${formatDateDDMMYYYY(previousValue)})`
+          };
+        }
+        if (compareDates(fairVal, previousValue) <= 0) {
+          return {
+            isValid: false,
+            field: 'fair',
+            message: `⚠️ Fair date must be after ${goodVal ? 'Good' : (veryGoodVal ? 'Very Good' : 'Excellent')} (${formatDateDDMMYYYY(previousValue)})`
+          };
+        }
+        previousValue = fairVal;
+      }
+
+      // Check Poor ONLY if entered
+      const poorVal = String(row.poor || '').trim();
+      if (poorVal !== '') {
+        if (!isDateWithinFinancialYear(poorVal, selectedFY)) {
+          return {
+            isValid: false,
+            field: 'poor',
+            message: `⚠️ Poor date must be after ${fairVal ? 'Fair' : (goodVal ? 'Good' : (veryGoodVal ? 'Very Good' : 'Excellent'))} (${formatDateDDMMYYYY(previousValue)})`
+          };
+        }
+        if (compareDates(poorVal, previousValue) <= 0) {
+          return {
+            isValid: false,
+            field: 'poor',
+            message: `⚠️ Poor date must be after ${fairVal ? 'Fair' : (goodVal ? 'Good' : (veryGoodVal ? 'Very Good' : 'Excellent'))} (${formatDateDDMMYYYY(previousValue)})`
+          };
+        }
+      }
+    } else {
+      // ===== NUMBER/PERCENTAGE TYPE VALIDATION =====
+      // Excellent is mandatory - convert to number for comparison
+      const excellentVal = parseFloat(row.excellent) || 0;
+
+      // Check Very Good ONLY if filled
+      if (row.veryGood !== null && row.veryGood !== '') {
+        const veryGoodVal = parseFloat(row.veryGood) || 0;
+        if (veryGoodVal >= excellentVal) {
+          return {
+            isValid: false,
+            field: 'veryGood',
+            message: `📈 Very Good (${veryGoodVal}) must be less than Excellent (${excellentVal})`
+          };
+        }
+      }
+
+      // Check Good ONLY if filled
+      if (row.good !== null && row.good !== '') {
+        const goodVal = parseFloat(row.good) || 0;
+        const compareWith = row.veryGood ? parseFloat(row.veryGood) : excellentVal;
+        if (goodVal >= compareWith) {
+          return {
+            isValid: false,
+            field: 'good',
+            message: `✓ Good (${goodVal}) must be less than ${row.veryGood ? 'Very Good' : 'Excellent'} (${compareWith})`
+          };
+        }
+      }
+
+      // Check Fair ONLY if filled
+      if (row.fair !== null && row.fair !== '') {
+        const fairVal = parseFloat(row.fair) || 0;
+        const compareWith = row.good ? parseFloat(row.good) : (row.veryGood ? parseFloat(row.veryGood) : excellentVal);
+        if (fairVal >= compareWith) {
+          return {
+            isValid: false,
+            field: 'fair',
+            message: `↓ Fair (${fairVal}) must be less than ${row.good ? 'Good' : (row.veryGood ? 'Very Good' : 'Excellent')} (${compareWith})`
+          };
+        }
+      }
+
+      // Check Poor ONLY if filled
+      if (row.poor !== null && row.poor !== '') {
+        const poorVal = parseFloat(row.poor) || 0;
+        const compareWith = row.fair ? parseFloat(row.fair) : (row.good ? parseFloat(row.good) : (row.veryGood ? parseFloat(row.veryGood) : excellentVal));
+        if (poorVal >= compareWith) {
+          return {
+            isValid: false,
+            field: 'poor',
+            message: `✗ Poor (${poorVal}) must be less than ${row.fair ? 'Fair' : (row.good ? 'Good' : (row.veryGood ? 'Very Good' : 'Excellent'))} (${compareWith})`
+          };
+        }
+      }
+    }
+
+    // All validations passed
     return { isValid: true };
   };
 
@@ -1269,55 +1868,266 @@ const OperationsTargetSettingPage = () => {
       (centres.find(c => c.centrecode === centrecode)?.centreshortname === 'HQ');
   };
 
-  return (
-    <div className="container-fluid">
-      {/* ===== HEADER ===== */}
-      <div className="row mb-4">
-        <div className="col">
-          <h2 className="fw-bold">🎯 Operational Data Entry - TARGET SETTING</h2>
-          <p className="text-muted">Configure target settings for objectives with backend API integration</p>
-        </div>
-      </div>
+  // Comprehensive validation and submit all data
+  const validateAndSubmitAllData = async () => {
+    // If user is an approver, show approval flow instead
+    if (isApprover) {
+      return validateAndApproveAllData();
+    }
 
+    // Step 1: Check if centre is selected
+    if (!centrecode || centrecode.trim() === '') {
+      showAlert('Please select a centre before submitting', 'warning', 'Centre Required');
+      return;
+    }
+
+    // Step 2: Get all objectives that match current centre and financial year
+    const applicableObjectives = objectives.filter(obj => {
+      if (obj.mandatory === 'HQ') {
+        return isCurrentCentreHQ();
+      }
+      return true;
+    });
+
+    if (applicableObjectives.length === 0) {
+      showAlert('No objectives available for this centre', 'info', 'No Data');
+      return;
+    }
+
+    // Step 3: Check ONLY MANDATORY objectives for at least one saved row
+    // Optional objectives are NOT validated
+    const missingObjectives = [];
+    for (const obj of applicableObjectives) {
+      // Only validate if objective is mandatory
+      if (obj.mandatory === 'Yes' || obj.mandatory === 'HQ') {
+        const savedRowsForObj = rows.filter(r => r.objectCode === obj.objectivecode && r.isSaved);
+        if (savedRowsForObj.length === 0) {
+          missingObjectives.push(`${obj.objectivecode} - ${obj.objectivedescription}`);
+        }
+      }
+    }
+
+    // Step 4: Show validation errors if any mandatory objectives are missing
+    if (missingObjectives.length > 0) {
+      const errorList = missingObjectives.map((obj, idx) => `${idx + 1}. ${obj}`).join(' | ');
+      showAlert(`Missing ${missingObjectives.length} mandatory objective(s): ${errorList}`, 'error', 'Validation Failed');
+      return;
+    }
+
+    // Step 5: All validations passed - show confirmation
+    const totalSaved = rows.filter(r => r.isSaved).length;
+    const totalMandatory = applicableObjectives.filter(obj => obj.mandatory === 'Yes' || obj.mandatory === 'HQ').length;
+    const totalOptional = applicableObjectives.length - totalMandatory;
+    
+    const summaryMessage = `Total Entries: ${totalSaved}\nMandatory Objectives: ${totalMandatory} ✓\nOptional Objectives: ${totalOptional}\nFinancial Year: ${selectedFY}\nCentre: ${centrecode}`;
+
+    showConfirmAlert(
+      'Submit All Data?',
+      `All mandatory objectives are complete!\n\n${summaryMessage}\n\nThis will lock the form from further editing.`
+    ).then((result) => {
+      if (result.isConfirmed) {
+        // Step 6: Call backend API to submit all records
+        submitAllData();
+      }
+    });
+  };
+
+  // Validate and approve all data (Approver role only)
+  const validateAndApproveAllData = async () => {
+    // Count approval statuses
+    const approved = rows.filter(r => r.approvalStatus === 'APPROVED').length;
+    const rejected = rows.filter(r => r.approvalStatus === 'REJECTED').length;
+    const pending = rows.filter(r => r.approvalStatus === 'PENDING').length;
+
+    // If there are rejected entries, show warning
+    if (rejected > 0) {
+      const warningMsg = `You have ${rejected} rejected entry(ies).\n\nApproved: ${approved}\nRejected: ${rejected}\nPending: ${pending}\n\nDo you want to approve with these rejected cases?`;
+      
+      showConfirmAlert(
+        'Approve All with Rejected Cases?',
+        warningMsg
+      ).then((result) => {
+        if (result.isConfirmed) {
+          approveAllToBackend();
+        }
+      });
+    } else if (pending > 0) {
+      showAlert(`You have ${pending} pending entry(ies). Please approve or reject them first.`, 'warning', 'Pending Entries');
+    } else {
+      // All approved
+      const summaryMessage = `Total Entries Approved: ${approved}\nFinancial Year: ${selectedFY}\nCentre: ${centrecode}`;
+      
+      showConfirmAlert(
+        'Approve All Data?',
+        `All entries are ready for approval!\n\n${summaryMessage}`
+      ).then((result) => {
+        if (result.isConfirmed) {
+          approveAllToBackend();
+        }
+      });
+    }
+  };
+
+  // Approve all to backend
+  const approveAllToBackend = async () => {
+    try {
+      setLoading(true);
+      const fyYear = selectedFY;
+      const approved = rows.filter(r => r.approvalStatus === 'APPROVED' || r.approvalStatus === 'PENDING').length;
+
+      const payload = {
+        financialyear: fyYear,
+        centrecode: centrecode,
+        approvedbatchcount: approved,
+        approvedbybatchby: userid,
+        approvedat: new Date().toISOString(),
+        rowdata: rows.filter(r => r.isSaved).map(r => ({
+          objectivecode: r.objectCode,
+          actioncode: r.actionCode,
+          successindicatorcode: r.successIndicatorCode,
+          approvalstatus: r.approvalStatus,
+          approvalremarks: r.approvalRemarks
+        }))
+      };
+
+      const response = await fetch('http://localhost:8080/api/targets/approveall', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to approve all entries';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+
+      showAlert(`All entries approved successfully! ${approved} entries were processed.`, 'success', 'Success');
+      // Lock the form
+      setIsFormSubmitted(true);
+    } catch (err) {
+      showAlert('Error: ' + err.message, 'error', 'Error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Helper function to submit data to backend
+  const submitAllData = async () => {
+    try {
+      setLoading(true);
+      console.log(`📤 Calling /submitall API for FY: ${selectedFY}, Centre: ${centrecode}`);
+      
+      const response = await fetch(`http://localhost:8080/api/targets/submitall?financialyear=${selectedFY}&centrecode=${centrecode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to submit all records';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+
+      const result = await response.text();
+      console.log('✅ API Response:', result);
+
+      // Step 7: Freeze all rows after successful submission
+      // Make entire form read-only - all values cannot be edited
+      setRows(prev => prev.map(row => ({
+        ...row,
+        isEditing: false,
+        isSaved: true,
+        hasChanges: false
+      })));
+
+      // Show success message with submission count
+      showAlert(`${result} - All entries are now frozen and cannot be edited`, 'success', 'Submitted');
+      console.log(`✅ All entries submitted and frozen successfully`);
+    } catch (err) {
+      showAlert('Error submitting data: ' + err.message, 'error', 'Error');
+      console.error('Submission error:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="container-fluid" style={{backgroundColor: '#f5f7fa', minHeight: '100vh', paddingTop: '1.5rem', paddingBottom: '2rem'}}>
   
 
       {/* ===== ERROR & LOADING MESSAGES ===== */}
-      {error && <div className="alert alert-danger alert-dismissible fade show"><strong>Error:</strong> {error}</div>}
-      {loading && <div className="alert alert-info"><div className="spinner-border spinner-border-sm me-2"></div>Loading data...</div>}
+      {error && (
+        <div className="alert alert-danger alert-dismissible fade show" style={{borderRadius: '8px', borderLeft: '4px solid #dc3545'}}>
+          <AlertCircle size={18} className="me-2" style={{display: 'inline-block'}} />
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+      {loading && (
+        <div className="alert alert-info" style={{borderRadius: '8px', borderLeft: '4px solid #0066cc'}}>
+          <Loader size={16} className="me-2 spinner-border spinner-border-sm" style={{display: 'inline-block'}} />
+          Loading data...
+        </div>
+      )}
 
-      {/* ===== OPERATION & PERIOD SELECTION ===== */}
-      <div className="row g-2 mb-4 align-items-end">
-        <div className="col-md-5">
-          <label className="form-label fw-semibold mb-2">📋 Select Operation *</label>
-          <div className="btn-group w-100" role="group">
-            <input type="radio" className="btn-check" name="operation" id="targetSetting" value="TARGET_SETTING" checked={operation === 'TARGET_SETTING'} onChange={(e) => setOperation(e.target.value)} />
-            <label className="btn btn-outline-primary fw-semibold" htmlFor="targetSetting" style={{fontSize: '0.9rem', padding: '0.4rem 0.8rem'}}>
-              🎯 Target Setting (2026-2027)
-            </label>
-            
-            <input type="radio" className="btn-check" name="operation" id="targetAchieved" value="TARGET_ACHIEVED" onChange={(e) => setOperation(e.target.value)} disabled />
-            <label className="btn btn-outline-secondary fw-semibold disabled" htmlFor="targetAchieved" style={{fontSize: '0.9rem', padding: '0.4rem 0.8rem'}}>
-              ✅ Target Achieved (2025-2026)
-            </label>
+      {/* ===== IMPROVED CONTROLS SECTION - MADE SMALLER ===== */}
+      <div className="row g-2 mb-3">
+        <div className="col-lg-3">
+          <div className="card border-0 shadow-sm h-100" style={{borderRadius: '8px', overflow: 'hidden'}}>
+            <div className="card-body p-2">
+              <label className="form-label fw-bold mb-1" style={{fontSize: '0.85rem', color: '#495057'}}>
+                🎭 Operation Type
+              </label>
+              <div className="btn-group w-100" role="group" style={{fontSize: '0.75rem'}}>
+                <input type="radio" className="btn-check" name="operation" id="targetSetting" value="TARGET_SETTING" checked={operation === 'TARGET_SETTING'} onChange={(e) => setOperation(e.target.value)} />
+                <label className="btn btn-outline-primary fw-semibold" htmlFor="targetSetting" style={{fontSize: '0.75rem', padding: '0.3rem 0.4rem', borderRadius: '6px 0 0 6px'}}>
+                  🎯 Target Setting
+                </label>
+                
+                <input type="radio" className="btn-check" name="operation" id="targetAchieved" value="TARGET_ACHIEVED" onChange={(e) => setOperation(e.target.value)} disabled />
+                <label className="btn btn-outline-secondary fw-semibold disabled" htmlFor="targetAchieved" style={{fontSize: '0.75rem', padding: '0.3rem 0.4rem', borderRadius: '0 6px 6px 0'}}>
+                  ✅ Achieved
+                </label>
+              </div>
+              <small className="text-muted d-block mt-1" style={{fontSize: '0.7rem'}}>
+                <strong>FY:</strong> {operation === 'TARGET_SETTING' ? '2026-2027 (Next)' : '2025-2026 (Current)'}
+              </small>
+            </div>
           </div>
         </div>
 
-        <div className="col-md-3">
-          <label className="form-label fw-semibold mb-2" style={{
-            color: (!centrecode || centrecode.trim() === '') ? '#dc3545' : '#495057',
-            fontWeight: 'bold'
-          }}>
-            💼 Centre {(!centrecode || centrecode.trim() === '') && <span style={{color: '#dc3545'}}>*REQUIRED</span>}
-          </label>
-          {String(assignedCentre).toUpperCase() === 'ALL' ? (
+        <div className="col-lg-3">
+          <div className="card border-0 shadow-sm h-100" style={{borderRadius: '8px', overflow: 'hidden'}}>
+            <div className="card-body p-2">
+              <label className="form-label fw-bold mb-1" style={{
+                fontSize: '0.85rem',
+                color: (!centrecode || centrecode.trim() === '') ? '#dc3545' : '#495057'
+              }}>
+                🏢 Centre Selection
+                {(!centrecode || centrecode.trim() === '') && (
+                  <span className="badge bg-danger ms-1" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>REQ</span>
+                )}
+              </label>
+          {(String(assignedCentre).toUpperCase() === 'ALL' || Array.isArray(assignedCentre)) ? (
             <>
               <select
-                className={`form-select form-select-sm ${(!centrecode || centrecode.trim() === '') ? 'is-invalid border-danger border-3' : ''}`}
+                className={`form-select form-select-sm ${(!centrecode || centrecode.trim() === '') ? 'is-invalid border-danger border-2' : ''}`}
                 value={centrecode}
                 onChange={(e) => {
                   const selectedCentre = e.target.value;
                   
-                  // Validate centre selection
                   if (!selectedCentre || selectedCentre.trim() === '') {
                     setTooltipError({
                       rowId: null,
@@ -1327,92 +2137,140 @@ const OperationsTargetSettingPage = () => {
                     return;
                   }
                   
-                  // Clear tooltip error
                   setTooltipError(null);
-                  
-                  // Update centre
                   setCentrecode(selectedCentre);
                   
                   console.log(`📍 Centre changed to: ${selectedCentre}, Fetching saved data...`);
                   
-                  // Fetch saved rows for selected centre and FY
                   fetchSavedRowsForCentre(selectedCentre, selectedFY).then(savedRows => {
                     console.log(`🔄 Setting rows with ${savedRows.length} saved rows`);
                     
                     setRows(prev => {
-                      // Remove ALL previously saved rows from other centres
-                      // Keep ONLY template rows (where isSaved === false)
                       const templateRows = prev.filter(r => !r.isSaved);
-                      
-                      // Combine: new saved rows + empty template
                       const newRows = [...savedRows, ...templateRows];
-                      
                       console.log(`📋 Total rows after centre change: ${newRows.length} (${savedRows.length} saved + ${templateRows.length} template)`);
-                      
                       return newRows;
                     });
                   });
                 }}
                 style={{
-                  fontSize: '0.9rem',
-                  borderWidth: (!centrecode || centrecode.trim() === '') ? '3px' : '1px',
-                  backgroundColor: (!centrecode || centrecode.trim() === '') ? '#fff5f5' : '#fff'
+                  fontSize: '0.8rem',
+                  borderWidth: (!centrecode || centrecode.trim() === '') ? '2px' : '1px',
+                  backgroundColor: (!centrecode || centrecode.trim() === '') ? '#fff5f5' : '#fff',
+                  padding: '0.4rem'
                 }}
               >
-                <option value="">🔴 SELECT CENTRE FIRST...</option>
-                {centres.map(c => (
-                  <option key={c.centrecode} value={c.centrecode}>
-                    {`${c.centreshortname} - ${c.centrelongname}`}
-                  </option>
-                ))}
+                <option value="">🔴 SELECT...</option>
+                {Array.isArray(assignedCentre)
+                  ? centres
+                      .filter(c => assignedCentre.includes(c.centrecode))
+                      .map(c => (
+                        <option key={c.centrecode} value={c.centrecode}>
+                          {`${c.centreshortname} - ${c.centrelongname}`}
+                        </option>
+                      ))
+                  : centres.map(c => (
+                      <option key={c.centrecode} value={c.centrecode}>
+                        {`${c.centreshortname} - ${c.centrelongname}`}
+                      </option>
+                    ))}
               </select>
               {tooltipError?.field === 'centrecode' && (
-                <div className="invalid-feedback d-block" style={{color: '#dc3545', fontSize: '0.85rem', marginTop: '0.25rem', fontWeight: 'bold'}}>
+                <div className="invalid-feedback d-block" style={{color: '#dc3545', fontSize: '0.7rem', marginTop: '0.15rem', fontWeight: 'bold'}}>
                   {tooltipError.message}
                 </div>
               )}
-              {(!centrecode || centrecode.trim() === '') && !tooltipError && (
-                <small style={{color: '#dc3545', display: 'block', marginTop: '0.5rem', fontWeight: 'bold'}}>
-                  👆 Select your centre to proceed
-                </small>
-              )}
             </>
           ) : (
-            <div className="alert alert-success mb-0 py-2 px-3" style={{fontSize: '0.9rem', display: 'flex', alignItems: 'center', backgroundColor: '#d4edda', borderColor: '#28a745'}}>
-              <strong>
-                {centres.length > 0 
-                  ? (() => {
-                      const found = centres.find(c => c.centrecode === (centrecode || assignedCentre));
-                      return found 
-                        ? `✅ ${found.centreshortname} - ${found.centrelongname}`
-                        : assignedCentre;
-                    })()
-                  : (centrecode || assignedCentre || 'Loading...')
-                }
-              </strong>
-              {/*<small className="ms-2 text-muted">(Role-based)</small>*/}
+            <div style={{fontSize: '0.8rem', padding: '0.35rem', backgroundColor: '#d4edda', borderRadius: '4px', color: '#155724'}}>
+              <strong>✅ {centrecode}</strong>
             </div>
           )}
+            </div>
+          </div>
         </div>
 
-        <div className="col-md-4">
-          <label className="form-label fw-semibold mb-2">📅 Financial Year</label>
-          <div className="alert alert-info mb-0 py-2 px-3" style={{fontSize: '0.9rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between'}}>
-            <span>{operation === 'TARGET_SETTING' ? '🎯 2026-2027 (Next Year)' : '✅ 2025-2026 (Current Year)'}</span>
+        <div className="col-lg-3">
+          <div className="card border-0 shadow-sm h-100" style={{borderRadius: '8px', overflow: 'hidden'}}>
+            <div className="card-body p-2">
+              <label className="form-label fw-bold mb-1" style={{fontSize: '0.85rem', color: '#495057'}}>
+                📅 Financial Year
+              </label>
+              <div style={{
+                fontSize: '0.8rem',
+                padding: '0.4rem 0.6rem',
+                backgroundColor: '#e6f4ff',
+                borderRadius: '4px',
+                color: '#0066cc',
+                border: '1px solid #b3d9ff',
+                fontWeight: '500'
+              }}>
+                🎯 {operation === 'TARGET_SETTING' ? '2026-2027 (Next Year)' : '2025-2026 (Current Year)'}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="col-lg-3">
+          <div className="card border-0 shadow-sm h-100" style={{borderRadius: '8px', overflow: 'hidden', background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f7ff 100%)'}}>
+            <div className="card-body p-2">
+              <label className="form-label fw-bold mb-1" style={{fontSize: '0.85rem', color: '#495057'}}>
+                📊 Data Status
+              </label>
+              <div style={{fontSize: '0.75rem', marginBottom: '0.5rem'}}>
+                <div className="badge bg-info" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>
+                  {rows.length} entries
+                </div>
+                <div className="badge bg-success ms-1" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>
+                  {rows.filter(r => r.isSaved || r.approvalStatus !== 'PENDING').length} {isApprover ? 'reviewed' : 'saved'}
+                </div>
+                {isApprover && (
+                  <>
+                    <div className="badge bg-warning ms-1" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>
+                      ✓ {rows.filter(r => r.approvalStatus === 'APPROVED').length} approved
+                    </div>
+                    <div className="badge bg-danger ms-1" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>
+                      ✗ {rows.filter(r => r.approvalStatus === 'REJECTED').length} rejected
+                    </div>
+                  </>
+                )}
+              </div>
+              <button
+                className="btn btn-primary fw-bold w-100"
+                onClick={() => validateAndSubmitAllData()}
+                disabled={!centrecode || centrecode.trim() === '' || loading || isFormSubmitted}
+                style={{
+                  fontSize: '0.75rem',
+                  padding: '0.3rem',
+                  borderRadius: '4px',
+                  backgroundColor: (!centrecode || centrecode.trim() === '' || isFormSubmitted) ? '#ccc' : isApprover ? '#ff9800' : '#0066cc',
+                  border: 'none',
+                  cursor: (!centrecode || centrecode.trim() === '' || isFormSubmitted) ? 'not-allowed' : 'pointer',
+                  opacity: isFormSubmitted ? 0.6 : 1
+                }}
+                title={isFormSubmitted ? '🔒 Form already submitted' : ''}
+              >
+                {isFormSubmitted ? '🔒 Completed' : loading ? (isApprover ? 'Approving...' : 'Submitting...') : isApprover ? '✅ Approve All' : '✅ Submit'}
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
       {/* ===== DATA ENTRY TABLE ===== */}
-      <div className={`card border-0 shadow-sm mb-4 ${(!centrecode || centrecode.trim() === '') ? 'opacity-50' : ''}`} style={{pointerEvents: (!centrecode || centrecode.trim() === '') ? 'none' : 'auto'}}>
-        <div className="card-header bg-success text-white">
+      <div className={`card border-0 shadow-lg mb-4 ${(!centrecode || centrecode.trim() === '') ? 'opacity-50' : ''}`} style={{pointerEvents: (!centrecode || centrecode.trim() === '') ? 'none' : 'auto', borderRadius: '12px', overflow: 'hidden'}}>
+        <div className="card-header" style={{background: 'linear-gradient(135deg, #28a745 0%, #20c997 100%)', color: 'white', borderBottom: 'none'}}>
           <div className="d-flex justify-content-between align-items-center">
-            <h5 className="mb-0">📊 Target Settings by Objective ({rows.length} entries)</h5>
-            <small className="text-white-50">All objectives auto-loaded - Multiple entries where allowed</small>
+            <h5 className="mb-0" style={{fontSize: '1.1rem', fontWeight: '700'}}>
+              📊 Target Settings Management
+            </h5>
+            <small style={{opacity: '0.9', fontSize: '0.85rem'}}>
+              Click on objectives to expand entries
+            </small>
           </div>
         </div>
 
-        <div className="card-body">
+        <div className="card-body p-0">
           {(!centrecode || centrecode.trim() === '') ? (
             <div className="alert alert-danger text-center py-5" style={{backgroundColor: '#f8d7da', borderColor: '#f5c6cb'}}>
               <h6 style={{fontSize: '1.2rem', fontWeight: 'bold', color: '#721c24'}}>🔴 Data Entry Disabled</h6>
@@ -1429,20 +2287,102 @@ const OperationsTargetSettingPage = () => {
             <div>
               {/* Add Entry buttons are now integrated into each row's action buttons */}
 
-              <div className="table-responsive" style={{overflowX: 'auto', overflowY: 'visible'}}>
-                <table className="table table-bordered table-hover table-sm" style={{width: '100%'}}>
-                  <thead className="table-light">
-                    <tr style={{backgroundColor: '#f8f9fa', borderBottom: '2px solid #dee2e6'}}>
-                      <th width="20%" style={{textAlign: 'center', fontSize: '0.8rem', fontWeight: '600', padding: '0.4rem'}}>Action Code</th>
-                      <th width="13%" style={{textAlign: 'center', fontSize: '0.8rem', fontWeight: '600', padding: '0.4rem'}}>Success Indicator</th>
-                      <th width="2%" style={{textAlign: 'center', fontSize: '0.8rem', fontWeight: '600', padding: '0.4rem'}}>Weight Type</th>
-                      <th width="2%" style={{textAlign: 'center', fontSize: '0.8rem', fontWeight: '600', padding: '0.4rem'}}>Weight</th>
-                      <th width="8%" style={{textAlign: 'center', fontSize: '0.75rem', fontWeight: '600', padding: '0.3rem', backgroundColor: '#cfe9ff', color: '#0066cc'}}>📊 Excellent</th>
-                      <th width="8%" style={{textAlign: 'center', fontSize: '0.75rem', fontWeight: '600', padding: '0.3rem', backgroundColor: '#cfe9ff', color: '#0066cc'}}>📈 Very Good</th>
-                      <th width="8%" style={{textAlign: 'center', fontSize: '0.75rem', fontWeight: '600', padding: '0.3rem', backgroundColor: '#cfe9ff', color: '#0066cc'}}>✓ Good</th>
-                      <th width="8%" style={{textAlign: 'center', fontSize: '0.75rem', fontWeight: '600', padding: '0.3rem', backgroundColor: '#cfe9ff', color: '#0066cc'}}>↓ Fair</th>
-                      <th width="8%" style={{textAlign: 'center', fontSize: '0.75rem', fontWeight: '600', padding: '0.3rem', backgroundColor: '#cfe9ff', color: '#0066cc'}}>✗ Poor</th>
-                      <th width="12%" style={{textAlign: 'center', fontSize: '0.8rem', fontWeight: '600', padding: '0.4rem', backgroundColor: '#f0f8ff'}}>ACTIONS</th>
+              <div className="table-responsive" style={{overflowX: 'auto', overflowY: 'auto', maxHeight: '600px', borderRadius: '8px', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.06)'}}>
+                <table className="table table-hover table-sm enhanced-table" style={{width: '100%', marginBottom: 0}}>
+                  <thead className="sticky-table-header" style={{position: 'sticky', top: 0, zIndex: 200, boxShadow: '0 6px 15px rgba(0, 0, 0, 0.2)'}}>
+                    <tr style={{
+                      background: 'linear-gradient(135deg, #f0f4f8 0%, #e8ecf1 100%)',
+                      borderBottom: '3px solid #0066cc',
+                      boxShadow: '0 2px 6px rgba(0, 102, 204, 0.1)'
+                    }}>
+                      <th width="18%" style={{
+                        textAlign: 'center',
+                        fontSize: '0.8rem',
+                        fontWeight: '700',
+                        padding: '0.75rem 0.5rem',
+                        color: '#0066cc',
+                        letterSpacing: '0.5px'
+                      }}>📋 Action Code</th>
+                      <th width="11%" style={{
+                        textAlign: 'center',
+                        fontSize: '0.8rem',
+                        fontWeight: '700',
+                        padding: '0.75rem 0.5rem',
+                        color: '#0066cc',
+                        letterSpacing: '0.5px'
+                      }}>🎯 Success Indicator</th>
+                      <th width="2%" style={{
+                        textAlign: 'center',
+                        fontSize: '0.75rem',
+                        fontWeight: '700',
+                        padding: '0.75rem 0.3rem',
+                        color: '#0066cc',
+                        letterSpacing: '0.5px'
+                      }}>⚖️ Type</th>
+                      <th width="2%" style={{
+                        textAlign: 'center',
+                        fontSize: '0.75rem',
+                        fontWeight: '700',
+                        padding: '0.75rem 0.3rem',
+                        color: '#0066cc',
+                        letterSpacing: '0.5px'
+                      }}>📊 Weight</th>
+                      <th width="8%" style={{
+                        textAlign: 'center',
+                        fontSize: '0.75rem',
+                        fontWeight: '700',
+                        padding: '0.5rem 0.3rem',
+                        backgroundColor: '#d4e9ff',
+                        color: '#004db3',
+                        borderRadius: '6px 0 0 0',
+                        letterSpacing: '0.5px'
+                      }}>⭐ Excellent</th>
+                      <th width="8%" style={{
+                        textAlign: 'center',
+                        fontSize: '0.75rem',
+                        fontWeight: '700',
+                        padding: '0.5rem 0.3rem',
+                        backgroundColor: '#d4e9ff',
+                        color: '#004db3',
+                        letterSpacing: '0.5px'
+                      }}>📈 Very Good</th>
+                      <th width="8%" style={{
+                        textAlign: 'center',
+                        fontSize: '0.75rem',
+                        fontWeight: '700',
+                        padding: '0.5rem 0.3rem',
+                        backgroundColor: '#d4e9ff',
+                        color: '#004db3',
+                        letterSpacing: '0.5px'
+                      }}>✓ Good</th>
+                      <th width="8%" style={{
+                        textAlign: 'center',
+                        fontSize: '0.75rem',
+                        fontWeight: '700',
+                        padding: '0.5rem 0.3rem',
+                        backgroundColor: '#d4e9ff',
+                        color: '#004db3',
+                        letterSpacing: '0.5px'
+                      }}>⬇️ Fair</th>
+                      <th width="8%" style={{
+                        textAlign: 'center',
+                        fontSize: '0.75rem',
+                        fontWeight: '700',
+                        padding: '0.5rem 0.3rem',
+                        backgroundColor: '#d4e9ff',
+                        color: '#004db3',
+                        borderRadius: '0 6px 0 0',
+                        letterSpacing: '0.5px'
+                      }}>❌ Poor</th>
+                      <th width="16%" style={{
+                        textAlign: 'center',
+                        fontSize: '0.8rem',
+                        fontWeight: '700',
+                        padding: '0.75rem 0.4rem',
+                        backgroundColor: '#e6f4ff',
+                        color: '#0066cc',
+                        letterSpacing: '0.5px'
+                      }}>⚙️ Actions</th>
                     </tr>
                   </thead>
 
@@ -1460,7 +2400,14 @@ const OperationsTargetSettingPage = () => {
                         return true;
                       })
                       .map(obj => {
-                      const objEntries = rows.filter(r => r.objectCode === obj.objectivecode);
+                      // Filter rows for this objective
+                      let objEntries = rows.filter(r => r.objectCode === obj.objectivecode);
+                      
+                      // If form is submitted (T02), show ONLY saved rows (no empty templates)
+                      if (isFormSubmitted) {
+                        objEntries = objEntries.filter(r => r.isSaved);
+                      }
+                      
                       const defaultWeight = weights[obj.objectivecode];
                       const allowsMultiple = obj.multipleentries === 'Yes';
 
@@ -1469,7 +2416,15 @@ const OperationsTargetSettingPage = () => {
                           {/* Objective header row - COLLAPSIBLE */}
                           <tr 
                             className="table-info" 
-                            style={{backgroundColor: '#e7f3ff', cursor: 'pointer', height: '60px'}}
+                            style={{
+                              background: 'linear-gradient(90deg, #e7f3ff 0%, #f0f8ff 100%)',
+                              cursor: 'pointer',
+                              height: '60px',
+                              borderLeft: '4px solid #0066cc',
+                              transition: 'all 0.3s ease'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.background = 'linear-gradient(90deg, #d4e9ff 0%, #e3f2fd 100%)'}
+                            onMouseLeave={(e) => e.currentTarget.style.background = 'linear-gradient(90deg, #e7f3ff 0%, #f0f8ff 100%)'}
                             onClick={() => setExpandedObjectives(prev => ({...prev, [obj.objectivecode]: !prev[obj.objectivecode]}))}
                           >
                             <td colSpan={10} style={{padding: '1rem 0.5rem'}}>
@@ -1497,9 +2452,13 @@ const OperationsTargetSettingPage = () => {
                                   </div>
                                 </div>
                                 <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
-                                  {calculateTotalWeightForObjective(obj.objectivecode) && (
-                                    <span className="badge bg-success" style={{fontSize: '0.85rem', padding: '0.5rem 0.75rem'}}>
-                                      📊 Total Weight: {calculateTotalWeightForObjective(obj.objectivecode)}
+                                  {totalWeights[obj.objectivecode] && (
+                                    <span className="badge bg-success" style={{
+                                      fontSize: '0.85rem', 
+                                      padding: '0.5rem 0.75rem',
+                                      animation: 'pulse 0.5s ease-in-out'
+                                    }}>
+                                      📊 Total Weight: <strong>{totalWeights[obj.objectivecode]}</strong>
                                     </span>
                                   )}
                                 </div>
@@ -1511,7 +2470,16 @@ const OperationsTargetSettingPage = () => {
                           {expandedObjectives[obj.objectivecode] && objEntries.map(row => (
                             <React.Fragment key={row.id}>
                               {/* SINGLE ROW: ALL DATA + PERFORMANCE + ACTIONS (11 columns) */}
-                              <tr className={row.isSaved ? 'bg-success bg-opacity-15' : 'bg-light'} style={{borderLeft: row.isSaved ? '5px solid #28a745' : '4px solid #007bff', height: '40px', borderRadius: row.isSaved ? '4px 0 0 4px' : '0', fontWeight: row.isSaved ? '500' : 'normal'}}>
+                              <tr className={row.isSaved ? 'bg-success bg-opacity-10' : 'bg-light'} style={{
+                                borderLeft: row.isSaved ? '5px solid #28a745' : '4px solid #0066cc',
+                                height: '40px',
+                                borderRadius: row.isSaved ? '4px 0 0 4px' : '0',
+                                fontWeight: row.isSaved ? '500' : 'normal',
+                                transition: 'background-color 0.2s ease',
+                                backgroundColor: row.isSaved ? '#d4edda' : '#f8f9fa'
+                              }}
+                              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = row.isSaved ? '#c8e6c9' : '#f0f8ff'}
+                              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = row.isSaved ? '#d4edda' : '#f8f9fa'}>
                                 {/* ACTION CODE */}
                                 <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.2rem', backgroundColor: '#f8f9fa', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'actionCode' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
@@ -1519,7 +2487,6 @@ const OperationsTargetSettingPage = () => {
                                       <small>{row.actionName || row.actionCode || '-'}</small>
                                     ) : row.isEditing && row.multipleEntries ? (
                                       <CreatableSelect
-                                        isClearable
                                         isSearchable
                                         options={(actions[row.objectCode] || [])
                                           .filter(a => !a.actioncode.includes('XX'))
@@ -1567,34 +2534,56 @@ const OperationsTargetSettingPage = () => {
                                           }
                                         }}
                                         onCreateOption={(inputValue) => {
-                                          if (window.confirm(`Are you sure you want to add this action?\n\n"${inputValue}"`)) {
-                                            saveInlineAction(row.id, row.objectCode, inputValue);
-                                          }
+                                          showConfirmAlert(
+                                            'Add New Action?',
+                                            `Are you sure you want to add this action?\n\n"${inputValue}"`
+                                          ).then((result) => {
+                                            if (result.isConfirmed) {
+                                              saveInlineAction(row.id, row.objectCode, inputValue);
+                                            }
+                                          });
                                         }}
-                                        placeholder="Select or create..."
+                                        isClearable={false}
+                                        isDisabled={row.isSaved && !row.isEditing || isFormSubmitted}
                                         classNamePrefix="react-select"
                                         styles={{
                                           control: (base) => ({
                                             ...base,
-                                            fontSize: '0.75rem',
-                                            minHeight: '26px',
-                                            height: '26px',
+                                            fontSize: '0.95rem',
+                                            minHeight: '32px',
+                                            height: '32px',
                                             display: 'flex',
                                             alignItems: 'center',
-                                            justifyContent: 'center'
+                                            justifyContent: 'center',
+                                            fontWeight: '500',
+                                            backgroundColor: '#fff'
                                           }),
                                           placeholder: (base) => ({
                                             ...base,
-                                            textAlign: 'center',
-                                            margin: '0 auto',
-                                            position: 'absolute',
-                                            left: '50%',
-                                            transform: 'translateX(-50%)'
+                                            fontSize: '0.95rem',
+                                            display: 'none'
                                           }),
                                           input: (base) => ({
                                             ...base,
+                                            fontSize: '0.95rem',
                                             textAlign: 'center',
-                                            width: '100%'
+                                            width: '100%',
+                                            fontWeight: '500',
+                                            margin: 0,
+                                            padding: 0
+                                          }),
+                                          option: (base, state) => ({
+                                            ...base,
+                                            fontSize: '0.95rem',
+                                            fontWeight: '500',
+                                            backgroundColor: state.isSelected ? '#0066cc' : state.isFocused ? '#e6f4ff' : 'white',
+                                            color: state.isSelected ? 'white' : '#333'
+                                          }),
+                                          singleValue: (base) => ({
+                                            ...base,
+                                            fontSize: '0.95rem',
+                                            fontWeight: '500',
+                                            color: '#333'
                                           }),
                                           indicatorSeparator: (base) => ({
                                             ...base,
@@ -1602,10 +2591,11 @@ const OperationsTargetSettingPage = () => {
                                           }),
                                           dropdownIndicator: (base) => ({
                                             ...base,
-                                            color: '#666',
-                                            padding: '4px 8px',
-                                            display: 'flex',
-                                            alignItems: 'center'
+                                            display: 'none'
+                                          }),
+                                          menu: (base) => ({
+                                            ...base,
+                                            zIndex: 150
                                           })
                                         }}
                                       />
@@ -1652,7 +2642,7 @@ const OperationsTargetSettingPage = () => {
                                       <small>{row.siName ? row.siName : '-'}</small>
                                     ) : row.isEditing && row.multipleEntries ? (
                                       <select 
-                                        className="form-select form-select-sm"
+                                        className="form-select form-select-sm form-control-modern"
                                         value={row.successIndicatorCode || ''}
                                         onChange={(e) => {
                                           const siCode = e.target.value;
@@ -1660,10 +2650,19 @@ const OperationsTargetSettingPage = () => {
                                             handleSIChange(row.id, row.objectCode, row.actionCode, siCode);
                                           }
                                         }}
-                                        disabled={!isCentreLocked()}
-                                        style={{fontSize: '0.8rem', padding: '0.2rem'}}
+                                        disabled={!isCentreLocked() || (row.isSaved && !row.isEditing) || isFormSubmitted}
+                                        style={{
+                                          fontSize: '0.75rem',
+                                          padding: '0.35rem',
+                                          borderRadius: '4px',
+                                          border: '1px solid #ddd',
+                                          backgroundColor: (row.isSaved && !row.isEditing) || isFormSubmitted ? '#f0f0f0' : '#fff',
+                                          boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                                          cursor: !isCentreLocked() || (row.isSaved && !row.isEditing) || isFormSubmitted ? 'not-allowed' : 'pointer',
+                                          opacity: (row.isSaved && !row.isEditing) || isFormSubmitted ? 0.6 : 1
+                                        }}
                                       >
-                                        <option value="">Select SI...</option>
+                                        <option value="">Select Success Indicator</option>
                                         {successIndicators[row.objectCode]?.map(si => (
                                           <option key={si.successindicatorcode} value={si.successindicatorcode}>
                                             {si.successindicatordescription}
@@ -1710,23 +2709,34 @@ const OperationsTargetSettingPage = () => {
                                 <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.3rem', width: '8%', backgroundColor: '#f8f9fa'}}>
                                   {row.isEditing ? (
                                     <select 
-                                      className="form-select form-select-sm"
+                                      className="form-select form-select-sm form-control-modern"
                                       value={row.selectedWeightType || ''}
                                       onChange={(e) => handleWeightTypeChange(row.id, e.target.value)}
-                                      disabled={row.unitPreferred === 'Fixed' || row.multipleEntries || isCentreLocked()}
-                                      style={{fontSize: '0.8rem', padding: '0.2rem'}}
+                                      disabled={row.unitPreferred === 'Fixed' || row.multipleEntries || !isCentreLocked()}
+                                      style={{
+                                        fontSize: '0.85rem',
+                                        padding: '0.45rem',
+                                        borderRadius: '4px',
+                                        border: '1px solid #ddd',
+                                        backgroundColor: (row.unitPreferred === 'Fixed' || row.multipleEntries || !isCentreLocked()) ? '#f0f0f0' : '#fff',
+                                        boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                                        cursor: (row.unitPreferred === 'Fixed' || row.multipleEntries || !isCentreLocked()) ? 'not-allowed' : 'pointer',
+                                        appearance: 'none',
+                                        backgroundImage: 'none',
+                                        paddingRight: '0.75rem'
+                                      }}
                                     >
-                                      <option value="">Select...</option>
+                                      <option value="">Select Type...</option>
                                       <option value="DATE">📅 Date</option>
-                                      <option value="PERCENTAGE">📊 PERCENTAGE</option>
-                                      <option value="NUMBER">🔢 NUMBER</option>
+                                      <option value="PERCENTAGE">📊 Percentage</option>
+                                      <option value="NUMBER">🔢 Number</option>
                                     </select>
                                   ) : (
-                                    <small>
+                                    <small style={{fontWeight: '600', color: '#0066cc'}}>
                                       {row.selectedWeightType === 'DATE' ? '📅 Date' : 
-                                       row.selectedWeightType === 'PERCENTAGE' ? '📊 PERCENTAGE' : 
-                                       row.selectedWeightType === 'NUMBER' ? '🔢 NUMBER' : 
-                                       '-'} {row.unitPreferred === 'Fixed'}
+                                       row.selectedWeightType === 'PERCENTAGE' ? '📊 Percentage' : 
+                                       row.selectedWeightType === 'NUMBER' ? '🔢 Number' : 
+                                       '—'}
                                     </small>
                                   )}
                                 </td>
@@ -1931,15 +2941,37 @@ const OperationsTargetSettingPage = () => {
                                 </td>
 
                                 {/* SINGLE ACTIONS COLUMN: ALL 4 BUTTONS (SAVE, ADD, EDIT, DELETE) */}
-                                <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.2rem', backgroundColor: '#f0f8ff', minWidth: '120px'}}>
-                                  <div style={{display: 'flex', gap: '0.25rem', justifyContent: 'center', alignItems: 'center', flexWrap: 'nowrap', width: '100%'}}>
+                                <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.25rem', backgroundColor: '#f0f8ff', minWidth: '180px'}}>
+                                  <div style={{display: 'flex', gap: '0.2rem', justifyContent: 'center', alignItems: 'center', flexWrap: 'nowrap', width: '100%', overflow: 'hidden'}}>
                                     {/* SAVE BUTTON */}
                                     <button 
-                                      className="btn btn-sm btn-success"
+                                      className="btn btn-sm"
                                       onClick={() => saveRow(row)}
-                                      disabled={!row.isEditing || loading}
-                                      title="Save"
-                                      style={{fontSize: '0.7rem', padding: '0.2rem 0.3rem', minWidth: '24px', flex: '0 0 auto'}}
+                                      disabled={!row.isEditing || loading || isFormSubmitted}
+                                      title={isFormSubmitted ? "Form is locked - Cannot save" : "Save changes"}
+                                      style={{
+                                        fontSize: '0.65rem',
+                                        padding: '0.25rem 0.35rem',
+                                        minWidth: '24px',
+                                        flex: '0 0 auto',
+                                        backgroundColor: row.isEditing && !isFormSubmitted ? '#28a745' : '#e9ecef',
+                                        border: 'none',
+                                        color: row.isEditing && !isFormSubmitted ? 'white' : '#999',
+                                        borderRadius: '4px',
+                                        cursor: row.isEditing && !isFormSubmitted ? 'pointer' : 'not-allowed',
+                                        transition: 'all 0.2s ease',
+                                        fontWeight: '600'
+                                      }}
+                                      onMouseEnter={(e) => {
+                                        if (row.isEditing) {
+                                          e.currentTarget.style.backgroundColor = '#20c997';
+                                          e.currentTarget.style.boxShadow = '0 2px 6px rgba(40, 167, 69, 0.3)';
+                                        }
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        e.currentTarget.style.backgroundColor = row.isEditing ? '#28a745' : '#e9ecef';
+                                        e.currentTarget.style.boxShadow = 'none';
+                                      }}
                                     >
                                       {loading ? (
                                         <Loader size={10} className="spinner-border spinner-border-sm" />
@@ -1950,51 +2982,106 @@ const OperationsTargetSettingPage = () => {
                                     
                                     {/* ADD ENTRY BUTTON - Only show after row is saved - HIGHLIGHTED */}
                                     {row.multipleEntries && row.isSaved && getLastRowForObjective(row.objectCode)?.id === row.id && (
-                                      <>
-                                        <button 
-                                          className="btn btn-sm btn-success"
-                                          onClick={() => addNewEntryForObjective(row.objectCode)}
-                                          disabled={loading}
-                                          title="Add new entry"
-                                          style={{
-                                            fontSize: '0.7rem', 
-                                            padding: '0.3rem 0.5rem', 
-                                            minWidth: '28px', 
-                                            flex: '0 0 auto',
-                                            fontWeight: '600',
-                                            boxShadow: '0 0 8px rgba(40, 167, 69, 0.6)',
-                                            animation: 'pulse 2s infinite'
-                                          }}
-                                        >
-                                          <Plus size={12} />
-                                        </button>
-                                      </>
+                                      <button 
+                                        className="btn btn-sm"
+                                        onClick={() => addNewEntryForObjective(row.objectCode)}
+                                        disabled={loading || isFormSubmitted}
+                                        title={isFormSubmitted ? "Form is locked - Cannot add entries" : "Add new entry"}
+                                        style={{
+                                          fontSize: '0.65rem',
+                                          padding: '0.25rem 0.4rem',
+                                          minWidth: '28px',
+                                          flex: '0 0 auto',
+                                          fontWeight: '700',
+                                          background: isFormSubmitted ? '#ccc' : 'linear-gradient(135deg, #28a745 0%, #20c997 100%)',
+                                          color: isFormSubmitted ? '#666' : 'white',
+                                          border: 'none',
+                                          borderRadius: '5px',
+                                          boxShadow: isFormSubmitted ? 'none' : '0 2px 8px rgba(40, 167, 69, 0.4)',
+                                          animation: isFormSubmitted ? 'none' : 'pulse 2s infinite',
+                                          cursor: isFormSubmitted ? 'not-allowed' : 'pointer',
+                                          borderRadius: '4px',
+                                          transition: 'all 0.2s ease'
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          e.currentTarget.style.boxShadow = '0 4px 12px rgba(40, 167, 69, 0.6)';
+                                          e.currentTarget.style.transform = 'translateY(-1px)';
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          e.currentTarget.style.boxShadow = '0 2px 8px rgba(40, 167, 69, 0.4)';
+                                          e.currentTarget.style.transform = 'translateY(0)';
+                                        }}
+                                      >
+                                        <Plus size={11} />
+                                      </button>
                                     )}
                                     
                                     {/* EDIT BUTTON */}
                                     <button 
-                                      className={`btn btn-sm btn-outline-${row.isSaved && !row.isEditing ? 'primary' : 'secondary'}`}
+                                      className="btn btn-sm"
                                       onClick={() => requestEditRow(row.id)}
-                                      disabled={!row.isSaved || row.isEditing || loading}
-                                      title="Edit"
-                                      style={{fontSize: '0.7rem', padding: '0.2rem 0.3rem', minWidth: '24px', flex: '0 0 auto'}}
+                                      disabled={!row.isSaved || row.isEditing || loading || isFormSubmitted}
+                                      title={isFormSubmitted ? "Form is locked - Cannot edit" : "Edit this entry"}
+                                      style={{
+                                        fontSize: '0.65rem',
+                                        padding: '0.25rem 0.35rem',
+                                        minWidth: '24px',
+                                        flex: '0 0 auto',
+                                        backgroundColor: row.isSaved && !row.isEditing && !isFormSubmitted ? '#0066cc' : '#e9ecef',
+                                        color: row.isSaved && !row.isEditing && !isFormSubmitted ? 'white' : '#999',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        cursor: row.isSaved && !row.isEditing ? 'pointer' : 'not-allowed',
+                                        transition: 'all 0.2s ease',
+                                        fontWeight: '600'
+                                      }}
+                                      onMouseEnter={(e) => {
+                                        if (row.isSaved && !row.isEditing) {
+                                          e.currentTarget.style.backgroundColor = '#004da3';
+                                          e.currentTarget.style.boxShadow = '0 2px 6px rgba(0, 102, 204, 0.3)';
+                                        }
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        e.currentTarget.style.backgroundColor = row.isSaved && !row.isEditing ? '#0066cc' : '#e9ecef';
+                                        e.currentTarget.style.boxShadow = 'none';
+                                      }}
                                     >
-                                      <Edit size={11} />
+                                      <Edit size={10} />
                                     </button>
                                     
                                     {/* DELETE BUTTON - Only for Multi-Entry Objectives */}
                                     {row.multipleEntries && (
-                                      <>
-                                        <button 
-                                          className="btn btn-sm btn-outline-danger"
-                                          onClick={() => requestDeleteRow(row.id)}
-                                          disabled={!row.isSaved || row.hasChanges || loading}
-                                          title="Delete"
-                                          style={{fontSize: '0.7rem', padding: '0.2rem 0.3rem', minWidth: '24px', flex: '0 0 auto'}}
-                                        >
-                                          <Trash2 size={11} />
-                                        </button>
-                                      </>
+                                      <button 
+                                        className="btn btn-sm"
+                                        onClick={() => requestDeleteRow(row.id)}
+                                        disabled={!row.isSaved || row.hasChanges || loading || isFormSubmitted}
+                                        title={isFormSubmitted ? "Form is locked - Cannot delete" : "Delete this entry"}
+                                        style={{
+                                          fontSize: '0.65rem',
+                                          padding: '0.25rem 0.35rem',
+                                          minWidth: '24px',
+                                          flex: '0 0 auto',
+                                          backgroundColor: row.isSaved && !row.hasChanges && !isFormSubmitted ? '#dc3545' : '#e9ecef',
+                                          color: row.isSaved && !row.hasChanges && !isFormSubmitted ? 'white' : '#999',
+                                          border: 'none',
+                                          borderRadius: '4px',
+                                          cursor: row.isSaved && !row.hasChanges && !isFormSubmitted ? 'pointer' : 'not-allowed',
+                                          transition: 'all 0.2s ease',
+                                          fontWeight: '600'
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          if (row.isSaved && !row.hasChanges && !isFormSubmitted) {
+                                            e.currentTarget.style.backgroundColor = '#c82333';
+                                            e.currentTarget.style.boxShadow = '0 2px 6px rgba(220, 53, 69, 0.3)';
+                                          }
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          e.currentTarget.style.backgroundColor = row.isSaved && !row.hasChanges ? '#dc3545' : '#e9ecef';
+                                          e.currentTarget.style.boxShadow = 'none';
+                                        }}
+                                      >
+                                        <Trash2 size={10} />
+                                      </button>
                                     )}
                                   </div>
                                 </td>
@@ -2071,40 +3158,64 @@ const OperationsTargetSettingPage = () => {
       )}
 
       {/* ===== INSTRUCTIONS ===== */}
-      <div className="alert alert-info border-start border-4 border-info">
-        <h6 className="fw-bold mb-2">📌 How to Use:</h6>
-        <ol className="mb-0">
-          <li><strong style={{color: '#dc3545'}}>🔴 FIRST: Select a Centre</strong> - This is MANDATORY! Select your centre from the dropdown above before doing anything else. Data entry and operations are disabled until you select a centre.</li>
-          <li>Select <strong>Operation</strong> and <strong>Financial Year</strong> at the top</li>
-          <li>All <strong>objectives auto-load</strong> from the API as collapsible rows</li>
-          <li>For objectives that allow <strong>Multiple Entries</strong> (like 001A, 002A, 003A), use the <strong>"Add Entry"</strong> button (visible only after saving the first entry)</li>
-          <li>For objectives with <strong>predefinedactions = "Yes"</strong>, select from dropdown. For <strong>"No"</strong>, enter description inline</li>
-          <li>System auto-generates action codes like "001AA000001" for non-predefined actions</li>
-          <li>Select <strong>Success Indicator</strong> → Weight type (Date/Number/%) loads from API</li>
-          <li><strong>Excellent field is MANDATORY</strong> — rest of the performance levels (Very Good, Good, Fair, Poor) are optional</li>
-          <li>If you enter values, they must follow the correct order: For DATE type, earlier dates for higher performance. For NUMBER/PERCENTAGE, higher values for higher performance</li>
-          <li>Date values display in <strong>dd/mm/yyyy</strong> format for user-friendly viewing</li>
-          <li>Click <strong>"Save"</strong> to save row to backend and freeze all values (Action Code, Success Indicator become read-only)</li>
-          <li>Click <strong>"Edit"</strong> to modify a saved row</li>
-          <li>Click <strong>"Delete"</strong> to remove a row (only for multiple-entry objectives)</li>
-          <li>Once a row is saved, an <strong>"Add Entry"</strong> button appears to add the next entry</li>
-        </ol>
+      <div className="card border-0 shadow-sm mb-4" style={{borderRadius: '10px', borderLeft: '5px solid #0066cc', overflow: 'hidden'}}>
+        <div className="card-body">
+          <h6 className="fw-bold mb-3" style={{fontSize: '1rem', color: '#0066cc'}}>📌 Quick Start Guide:</h6>
+          <div className="row">
+            <div className="col-md-6">
+              <ol style={{fontSize: '0.9rem', lineHeight: '1.8'}}>
+                <li><strong style={{color: '#dc3545', fontSize: '1rem'}}>🔴 Step 1:</strong> Select Centre - <span style={{color: '#666'}}>MANDATORY! Data entry is disabled until you select a centre</span></li>
+                <li><strong style={{color: '#0066cc'}}>🎯 Step 2:</strong> Click on an objective to expand it and see entries</li>
+                <li><strong style={{color: '#0066cc'}}>➕ Step 3:</strong> For multi-entry objectives, use "Add Entry" button after saving first entry</li>
+                <li><strong style={{color: '#0066cc'}}>💾 Step 4:</strong> Fill in all required fields (Action Code, Success Indicator, Excellent)</li>
+                <li><strong style={{color: '#28a745'}}>✅ Step 5:</strong> Click "Save" button to freeze and save the row</li>
+              </ol>
+            </div>
+            <div className="col-md-6">
+              <div style={{backgroundColor: '#f0f8ff', padding: '1rem', borderRadius: '8px', fontSize: '0.9rem'}}>
+                <h6 style={{color: '#0066cc', fontWeight: '600', marginBottom: '0.75rem'}}>💡 Important Tips:</h6>
+                <ul style={{fontSize: '0.85rem', marginBottom: 0}}>
+                  <li>✓ <strong>Excellent</strong> field is MANDATORY</li>
+                  <li>✓ Other performance levels are OPTIONAL</li>
+                  <li>✓ Dates must be in <strong>dd/mm/yyyy</strong> format</li>
+                  <li>✓ For DATE: earlier dates = higher performance</li>
+                  <li>✓ For NUMBER/%-: higher values = higher performance</li>
+                  <li>✓ Use <strong>Edit</strong> button to modify saved rows</li>
+                  <li>✓ Use <strong>Delete</strong> button only for multi-entry objectives</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* ===== API REFERENCE ===== */}
-      <div className="alert alert-secondary border-start border-4 border-secondary">
-        <h6 className="fw-bold mb-2">🔗 API Endpoints Being Used:</h6>
-        <ul className="mb-0 font-monospace">
-          <li><code>GET http://localhost:8080/api/objectives</code> - Fetch all objectives</li>
-          <li><code>GET http://localhost:8080/api/actions/objective/{'{objectcode}'}</code> - Fetch actions by objective</li>
-          <li><code>GET http://localhost:8080/api/successindicator/success/{'{objectcode}'}</code> - Fetch success indicators</li>
-          <li><code>GET http://localhost:8080/api/objectives/getWeights/{'{objectcode}'}</code> - Fetch weight type</li>
-          <li><code>POST http://localhost:8080/api/actions/auto</code> - Save user-entered actions with auto-generated codes</li>
-          <li><code>POST http://localhost:8080/api/targets</code> - <strong>CREATE/UPDATE target setting row</strong></li>
-          <li><code>POST http://localhost:8080/api/targets/delete</code> - <strong>DELETE target setting row</strong></li>
-          <li><code>POST http://localhost:8080/api/targets/by-id</code> - <strong>GET target setting by composite ID</strong></li>
-          <li><code>GET http://localhost:8080/api/targets</code> - <strong>GET all target settings</strong></li>
-        </ul>
+      <div className="card border-0 shadow-sm mb-4" style={{borderRadius: '10px', borderLeft: '5px solid #6c757d', overflow: 'hidden'}}>
+        <div className="card-body">
+          <h6 className="fw-bold mb-3" style={{fontSize: '1rem', color: '#6c757d'}}>🔗 Backend API Endpoints:</h6>
+          <div className="row">
+            <div className="col-md-6">
+              <small className="text-muted d-block mb-2" style={{fontSize: '0.8rem', fontWeight: 'bold'}}>READ ENDPOINTS:</small>
+              <ul className="mb-0" style={{fontSize: '0.8rem'}}>
+                <li><code>GET /api/objectives</code></li>
+                <li><code>GET /api/actions/objective/{'{id}'}</code></li>
+                <li><code>GET /api/successindicator/success/{'{id}'}</code></li>
+                <li><code>GET /api/objectives/getWeights/{'{id}'}</code></li>
+                <li><code>GET /api/targets</code></li>
+                <li><code>GET /api/centres</code></li>
+              </ul>
+            </div>
+            <div className="col-md-6">
+              <small className="text-muted d-block mb-2" style={{fontSize: '0.8rem', fontWeight: 'bold'}}>WRITE ENDPOINTS:</small>
+              <ul className="mb-0" style={{fontSize: '0.8rem'}}>
+                <li><code>POST /api/targets</code> - <strong style={{color: '#28a745'}}>Create</strong></li>
+                <li><code>PATCH /api/targets/{'{...paths}'}</code> - <strong style={{color: '#0066cc'}}>Update</strong></li>
+                <li><code>DELETE /api/targets/{'{...paths}'}</code> - <strong style={{color: '#dc3545'}}>Delete</strong></li>
+                <li><code>POST /api/actions/auto</code> - <strong style={{color: '#28a745'}}>Auto-generate codes</strong></li>
+              </ul>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* ===== CONFIRMATION MODAL - DELETE ONLY ===== */}
