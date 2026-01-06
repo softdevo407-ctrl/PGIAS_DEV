@@ -1,2 +1,7 @@
 set HTTP_PROXY=http://psnath:Sso*2025@10.14.1.1:8080
 set HTTPS_PROXY=http://psnath:Sso*2025@10.14.1.1:8080
+/////////////
+
+
+
+Build an Website for Project, TDP , Advcaned R&D and Other activities Status and Expenditure Monitoring System having dashboards with roles having chairman, Director, program director and Project Director consider around 20 projects like project1, project2, tdp1, tdp2, ard1, ard2 and here projects will having task scheduling it can be of where only Project Director can only enter so give with advanced Dashboard UI and Reports

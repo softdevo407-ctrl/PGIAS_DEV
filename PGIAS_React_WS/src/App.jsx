@@ -3,6 +3,7 @@ import { Home, Users, DollarSign, FileText, Settings, BarChart, Package, LogOut,
 import { userRoleAPI } from './services/api';
 import HomePage from './pages/HomePage';
 import OperationsTargetSettingPage from './pages/OperationsTargetSettingPage';
+import ApprovalQueuePage from './pages/ApprovalQueuePage';
 import NoRoleAccess from './pages/NoRoleAccess';
 
 // Auth Context
@@ -32,6 +33,7 @@ const PAGES = {
   operationsReview: { name: 'Review & Approve', icon: BarChart, path: '/operations/review' },
   operationsReport: { name: 'Reports', icon: FileText, path: '/operations/report' },
   operationsApproval: { name: 'Approval Queue', icon: Shield, path: '/operations/approval' },
+  approve: { name: 'Approve', icon: Shield, path: '/approve' },
   genericEntry: { name: 'Generic Entry', icon: FileText, path: '/generic-entry', submenu: ['roleManagement', 'userRoleAssignment', 'centres', 'centreTypes', 'objectives', 'screens', 'successIndicator', 'actions', 'statusCodes', 'unitDatatypeCodes'] },
   roleManagement: { name: 'Role Management', icon: Shield, path: '/roles' },
   userRoleAssignment: { name: 'User Role Assignment', icon: Shield, path: '/user-roles' },
@@ -276,6 +278,8 @@ const AuthProvider = ({ children }) => {
           localStorage.setItem('centreCode', userWithRoles.centreCode || '');
           // Store centre codes array as JSON for easy parsing in components
           localStorage.setItem('centreCodesArray', JSON.stringify(userWithRoles.centreCodesArray || []));
+          // Store user role for role-specific page rendering
+          localStorage.setItem('userRole', userWithRoles.roleCode || '');
           
         } catch (e) {
           console.warn('Could not set loginId/centreCode in localStorage', e);
@@ -536,14 +540,16 @@ const Sidebar = ({ collapsed, setCollapsed, activePage, setActivePage }) => {
   const [operationsOpen, setOperationsOpen] = useState(false);
 
   // Show dashboard and users for all (always shown)
-  // Add operations if user has 'USR' or 'REV' role
+  // Add operations if user has 'USR', 'REV', or 'APR' role
   // Add genericEntry if user has 'ADM' role
   const hasADMRole = user && Array.isArray(user.roles) && user.roles.includes('ADM');
   const hasUSRRole = user && Array.isArray(user.roles) && (user.roles.includes('USR') || user.roles.includes('REV'));
+  const hasAPRRole = user && Array.isArray(user.roles) && user.roles.includes('APR');
   
   // Build pages dynamically based on roles
   let pageKeysToShow = ['dashboard', 'users'];
   if (hasUSRRole) pageKeysToShow.push('operations');
+  if (hasAPRRole) pageKeysToShow.push('approve'); // Direct approve menu for APR users
   if (hasADMRole) pageKeysToShow.push('genericEntry');
 
   // Debug log
@@ -624,7 +630,7 @@ const Sidebar = ({ collapsed, setCollapsed, activePage, setActivePage }) => {
 
                   {!collapsed && operationsOpen && (
                     <div className="ms-3 mt-2">
-                      {['operationsDataEntry', 'operationsReview', 'operationsReport', 'operationsApproval'].map(subKey => {
+                      {(hasAPRRole ? ['operationsApproval'] : ['operationsDataEntry', 'operationsReview', 'operationsReport', 'operationsApproval']).map(subKey => {
                         const sub = PAGES[subKey];
                         if (!sub) return null;
                         const SubIcon = sub.icon;
@@ -637,7 +643,7 @@ const Sidebar = ({ collapsed, setCollapsed, activePage, setActivePage }) => {
                             }`}
                           >
                             <SubIcon size={16} />
-                            <span className="ms-2">{sub.name}</span>
+                            <span className="ms-2">{subKey === 'operationsApproval' && hasAPRRole ? '✅ Approval Queue' : sub.name}</span>
                           </button>
                         );
                       })}
@@ -2131,18 +2137,7 @@ const OperationsReportPage = () => (
 );
 
 const OperationsApprovalPage = () => (
-  <div className="container-fluid">
-    <div className="row mb-4">
-      <div className="col">
-        <h2 className="fw-bold">✅ Approval Queue</h2>
-        <p className="text-muted">Track pending approvals and approval history</p>
-      </div>
-    </div>
-    <div className="alert alert-info">
-      <strong>Features:</strong> View pending approvals, approval workflow status, approval history
-    </div>
-    <p className="text-muted">This page will show all items pending approval with workflow status.</p>
-  </div>
+  <ApprovalQueuePage />
 );
 
 // Page Router
@@ -2155,6 +2150,7 @@ const PageRouter = ({ activePage, user }) => {
     operationsReview: <OperationsReviewPage />,
     operationsReport: <OperationsReportPage />,
     operationsApproval: <OperationsApprovalPage />,
+    approve: <ApprovalQueuePage />,
     roleManagement: <React.Suspense fallback={<div className="text-center py-5"><div className="spinner-border text-primary" role="status"><span className="visually-hidden">Loading...</span></div></div>}><RoleManagementPage /></React.Suspense>,
     userRoleAssignment: <React.Suspense fallback={<div className="text-center py-5"><div className="spinner-border text-primary" role="status"><span className="visually-hidden">Loading...</span></div></div>}><UserRoleAssignmentPage /></React.Suspense>,
     centres: <React.Suspense fallback={<div className="text-center py-5"><div className="spinner-border text-primary" role="status"><span className="visually-hidden">Loading...</span></div></div>}><CentresPage /></React.Suspense>,
