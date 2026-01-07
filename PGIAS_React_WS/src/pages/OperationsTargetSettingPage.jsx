@@ -2,7 +2,7 @@
 // This is a new, completely redesigned page with table-based entry
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Edit, Trash2, CheckCircle, ChevronDown, ChevronRight, X, Search, Loader, AlertCircle, Bell, Check, AlertTriangle, Info } from 'lucide-react';
+import { Plus, Edit, Trash2, CheckCircle, ChevronDown, ChevronRight, X, Search, Loader, AlertCircle, Bell, Check, AlertTriangle, Info, UploadCloud } from 'lucide-react';
 import CreatableSelect from 'react-select/creatable';
 import Swal from 'sweetalert2';
 
@@ -17,21 +17,6 @@ const pulseStyle = `
     }
     100% {
       box-shadow: 0 0 8px rgba(40, 167, 69, 0.6);
-    }
-  }
-  
-  @keyframes highlightRow {
-    0% {
-      background-color: #fffacd;
-      box-shadow: inset 0 0 10px rgba(255, 193, 7, 0.5);
-    }
-    50% {
-      background-color: #fff9c4;
-      box-shadow: inset 0 0 15px rgba(255, 193, 7, 0.8);
-    }
-    100% {
-      background-color: #fffacd;
-      box-shadow: inset 0 0 10px rgba(255, 193, 7, 0.5);
     }
   }
   
@@ -160,10 +145,12 @@ const OperationsTargetSettingPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [expandedObjectives, setExpandedObjectives] = useState({}); // Track which objectives are expanded
-  const [rejectedRecords, setRejectedRecords] = useState([]); // Store rejected records with remarks
-  const [expandedRejected, setExpandedRejected] = useState({}); // Track expanded rejected records
-  const [resubmissionRow, setResubmissionRow] = useState(null); // Track which row is being resubmitted {actionCode, siCode, remarks}
-  const [savedRecordsFilter, setSavedRecordsFilter] = useState('all'); // 'all', 'saved', 'rejected' - filter for saved records only
+  const [isFormSubmitted, setIsFormSubmitted] = useState(false); // Track if form is already submitted (statuscode T02)
+  
+  // Approver-specific state
+  const [showRemarksModal, setShowRemarksModal] = useState(false);
+  const [remarksData, setRemarksData] = useState({ rowId: null, remarks: '' });
+  // const isApprover = userRole === 'APR'; // Approver has separate page
   
   // Action creation state
   const [showActionModal, setShowActionModal] = useState(false);
@@ -291,10 +278,6 @@ const OperationsTargetSettingPage = () => {
   // When objectives load, create rows for each objective
   useEffect(() => {
     if (objectives.length > 0) {
-      // DO NOT auto-expand single-entry objectives on fresh load - let user expand them
-      // This prevents confusion when reopening the form after submission
-      // Only saved rows with data will be auto-expanded (handled separately in fetchSavedRowsForCentre)
-      
       const newRows = objectives.map(obj => {
         const hasMultipleEntries = obj.multipleentries === 'Yes';
         const hasPredefinedActions = obj.predefinedactions === 'Yes';
@@ -322,14 +305,12 @@ const OperationsTargetSettingPage = () => {
           siName: '',
           siDescription: '',
           weightInfo: null,
-          selectedWeightType: null,  // Will be populated by fetchWeightAndUpdateRow
-          // For single-entry objectives (multipleEntries = No): Pre-load fixed performance level values
-          // For multi-entry objectives (multipleEntries = Yes): Leave empty for user to enter
-          excellent: !hasMultipleEntries ? '⭐ Excellent' : '',
-          veryGood: !hasMultipleEntries ? '📈 Very Good' : '',
-          good: !hasMultipleEntries ? '✓ Good' : '',
-          fair: !hasMultipleEntries ? '⬇️ Fair' : '',
-          poor: !hasMultipleEntries ? '❌ Poor' : '',
+          selectedWeightType: null,  // User's selected weight type (can differ from default)
+          excellent: '',
+          veryGood: '',
+          good: '',
+          fair: '',
+          poor: '',
           isEditing: true,
           isSaved: false,
           hasChanges: false,  // Track if row has unsaved changes after being saved
@@ -346,8 +327,6 @@ const OperationsTargetSettingPage = () => {
       objectives.forEach(obj => {
         fetchActions(obj.objectivecode);
         fetchWeightAndUpdateRow(obj.objectivecode);
-        // Also fetch success indicators for each objective
-        fetchSuccessIndicators(obj.objectivecode);
       });
     }
   }, [objectives]);
@@ -384,54 +363,20 @@ const OperationsTargetSettingPage = () => {
     }
   }, [actions]);
 
-  // Ensure weight type is set for all rows (from fetchWeightAndUpdateRow response)
-  // This runs BEFORE auto-select SI so that weight value can be fetched
+  // Set default selectedWeightType when weights load
   useEffect(() => {
-    if (Object.keys(weights).length > 0 && rows.length > 0) {
+    if (Object.keys(weights).length > 0) {
       setRows(prev => {
-        let hasChanges = false;
-        const updated = prev.map(row => {
-          // If row doesn't have selectedWeightType but weights data is available
-          if (!row.selectedWeightType && weights[row.objectCode]) {
-            hasChanges = true;
-            console.log(`⚖️ Setting weight type for ${row.objectCode}: ${weights[row.objectCode].weightType}`);
-            return {
-              ...row,
-              selectedWeightType: weights[row.objectCode].weightType,
-              weightInfo: {
-                type: weights[row.objectCode].weightType,
-                unit: weights[row.objectCode].unit,
-                objectivecode: weights[row.objectCode].objectivecode
-              }
-            };
+        const updated = [...prev];
+        for (let row of updated) {
+          if (weights[row.objectCode] && !row.selectedWeightType) {
+            row.selectedWeightType = weights[row.objectCode].weightType;
           }
-          return row;
-        });
-        return hasChanges ? updated : prev;
-      });
-    }
-  }, [Object.keys(weights).join()]);
-
-  // Fetch weight values for rows that have SI but no weight value
-  // This is called after weight type is populated by fetchWeightAndUpdateRow
-  // Also triggers when rows change or selectedWeightType changes
-  useEffect(() => {
-    if (rows.length > 0) {
-      rows.forEach(row => {
-        // For rows with SI but no weight value yet AND selectedWeightType is set
-        if (row.successIndicatorCode && !row.weightValue && row.selectedWeightType) {
-          console.log(`📦 Fetching weight value for ${row.objectCode} + SI: ${row.successIndicatorCode}`);
-          fetchWeightValue(row.objectCode, row.successIndicatorCode).then(weightData => {
-            if (weightData) {
-              setRows(prev => prev.map(r =>
-                r.id === row.id ? { ...r, weightValue: weightData } : r
-              ));
-            }
-          });
         }
+        return updated;
       });
     }
-  }, [rows.length, rows.map(r => `${r.id}_${r.selectedWeightType}_${r.successIndicatorCode}`).join()]);
+  }, [weights]);
 
   // Load existing saved data for single-entry objectives
   useEffect(() => {
@@ -455,71 +400,6 @@ const OperationsTargetSettingPage = () => {
       });
     }
   }, [objectives]);
-
-  // Auto-select first success indicator for single-entry objectives after SI data loads
-  // IMPORTANT: Also fetch weight value for auto-selected SI
-  // For multipleEntries = No: Load fixed performance level values (⭐ Excellent, 📈 Very Good, etc.)
-  // THIS EFFECT RUNS WHEN:
-  // 1. successIndicators data loads (first load)
-  // 2. rows change (when new template rows are created during centre selection)
-  // 3. weights are set (so we know selectedWeightType is populated)
-  useEffect(() => {
-    if (Object.keys(successIndicators).length > 0 && rows.length > 0 && Object.keys(weights).length > 0) {
-      setRows(prev => {
-        let updated = false;
-        const newRows = prev.map(row => {
-          // For single-entry objectives (multipleEntries === false) without SI yet
-          // MUST HAVE: actionCode, selectedWeightType (both already populated)
-          if (!row.multipleEntries && !row.successIndicatorCode && row.actionCode && row.selectedWeightType) {
-            const siList = successIndicators[row.objectCode] || [];
-            if (siList.length > 0) {
-              const firstSI = siList[0];
-              updated = true;
-              
-              // IMPORTANT: Immediately fetch weight value for auto-selected SI
-              const siCode = firstSI.successindicatorcode;
-              console.log(`✅ Auto-selecting SI for ${row.objectCode}: ${siCode}, WeightType: ${row.selectedWeightType}`);
-              
-              if (!row.weightValue) {
-                console.log(`📦 Auto-fetching weight value for ${row.objectCode} + SI: ${siCode}`);
-                fetchWeightValue(row.objectCode, siCode).then(weightData => {
-                  if (weightData) {
-                    setRows(prev2 => prev2.map(r =>
-                      r.id === row.id ? { 
-                        ...r, 
-                        weightValue: weightData,
-                        // For single-entry objectives: Load fixed performance level values
-                        excellent: '⭐ Excellent',
-                        veryGood: '📈 Very Good',
-                        good: '✓ Good',
-                        fair: '⬇️ Fair',
-                        poor: '❌ Poor'
-                      } : r
-                    ));
-                  }
-                });
-              }
-              
-              return {
-                ...row,
-                successIndicatorCode: firstSI.successindicatorcode,
-                siName: firstSI.successindicatordescription || '',
-                siDescription: firstSI.successindicatordescription || '',
-                // For single-entry objectives: Load fixed performance level values
-                excellent: '⭐ Excellent',
-                veryGood: '📈 Very Good',
-                good: '✓ Good',
-                fair: '⬇️ Fair',
-                poor: '❌ Poor'
-              };
-            }
-          }
-          return row;
-        });
-        return updated ? newRows : prev;
-      });
-    }
-  }, [Object.keys(successIndicators).join(), Object.keys(weights).join(), rows.map(r => `${r.objectCode}_${r.actionCode}_${r.selectedWeightType}`).join()]);
 
   // Update Bootstrap tooltips when error state changes
   useEffect(() => {
@@ -547,6 +427,21 @@ const OperationsTargetSettingPage = () => {
     });
     setTotalWeights(updatedTotalWeights);
   }, [rows, objectives]);
+
+  // ===== CHECK FOR T02 STATUSCODE (SUBMITTED STAGE) =====
+  // Lock form if any row has statuscode = T02 (already submitted)
+  useEffect(() => {
+    if (rows && rows.length > 0) {
+      const hasT02Status = rows.some(row => row.statuscode === 'T02');
+      if (hasT02Status) {
+        setIsFormSubmitted(true);
+       // showAlert('This form has already been submitted (T02 status). Form is now locked.', 'info', 'Form Locked');
+        console.log('🔒 Form locked - Status T02 detected (submitted stage)');
+      } else {
+        setIsFormSubmitted(false);
+      }
+    }
+  }, [rows, centrecode, selectedFY]);
 
   // ===== API CALLS ====="
   
@@ -734,13 +629,11 @@ const OperationsTargetSettingPage = () => {
   // Fetch Weight from: http://localhost:8080/api/objectives/getWeights/{objectcode}
   const fetchWeightAndUpdateRow = async (objectCode) => {
     try {
-      console.log(`🔍 Fetching weight for objective: ${objectCode}`);
+      console.log(objectCode)
       const response = await fetch(`http://localhost:8080/api/objectives/getWeights/${objectCode}`);
       if (!response.ok) throw new Error('Failed to fetch weight');
       const data = await response.json();
       // data format: { objectivecode: "001A", weightType: "DATE", unit: "Date" }
-      
-      console.log(`✅ Weight data received for ${objectCode}:`, data);
       
       // Store in weights state
       setWeights(prev => ({
@@ -748,17 +641,17 @@ const OperationsTargetSettingPage = () => {
         [objectCode]: data
       }));
 
-      // Update the rows with both weightInfo and selectedWeightType
+      // Update the row's weightInfo with the fetched data
+      // Convert weightType from API to type field for consistency
       setRows(prev => prev.map(row => 
         row.objectCode === objectCode 
           ? { 
-              ...row,
+              ...row, 
               weightInfo: {
                 type: data.weightType,  // API sends "weightType", we store as "type"
                 unit: data.unit,
                 objectivecode: data.objectivecode
-              },
-              selectedWeightType: data.weightType  // Set selectedWeightType from API response (DATE, PERCENTAGE, NUMBER)
+              }
             }
           : row
       ));
@@ -829,8 +722,6 @@ const OperationsTargetSettingPage = () => {
           weightInfo: null,
           selectedWeightType: weightType,  // Now correctly set based on unit
           weightValue: item.weightperunitofactivity ? { value: item.weightperunitofactivity, unit: '' } : null,
-          // For saved single-entry objectives: show only saved values
-          // Do NOT populate emoji defaults for saved rows (only for new template rows)
           excellent: item.targetcriteriavalueexcellent || '',
           veryGood: item.targetcriteriavalueverygood || '',
           good: item.targetcriteriavaluegood || '',
@@ -862,74 +753,6 @@ const OperationsTargetSettingPage = () => {
       return savedRows;
     } catch (err) {
       console.error(`❌ Error fetching saved rows for centre ${centre}:`, err);
-      return [];
-    }
-  };
-
-  // Fetch rejected records with remarks
-  const fetchRejectedRecords = async (centre, fy) => {
-    try {
-      if (!centre) {
-        console.log('❌ No centre provided, skipping rejected records fetch');
-        return [];
-      }
-      
-      console.log(`🔍 API Call: GET /api/targets/rejected?centrecode=${centre}&financialyear=${fy}`);
-      const response = await fetch(`http://localhost:8080/api/targets/rejected?centrecode=${centre}&financialyear=${fy}`);
-      
-      if (!response.ok) {
-        console.warn(`⚠️ API returned status ${response.status} for rejected records`);
-        return [];
-      }
-      
-      const data = await response.json();
-      console.log(`📦 Rejected Records Response:`, data);
-      console.log(`❌ Found ${Array.isArray(data) ? data.length : 0} rejected records`);
-      
-      if (!Array.isArray(data) || data.length === 0) {
-        console.log(`ℹ️ No rejected records found`);
-        setRejectedRecords([]);
-        return [];
-      }
-      
-      // Map rejected records with remarks - DEDUPLICATE by objectCode + actionCode + siCode
-      const uniqueRecords = new Map();
-      data.forEach((item) => {
-        const key = `${item.objectivecode}_${item.actioncode}_${item.successindicatorcode}`;
-        // Keep only first occurrence (most recent)
-        if (!uniqueRecords.has(key)) {
-          uniqueRecords.set(key, {
-            id: `rejected_${key}`,
-            objectCode: item.objectivecode,
-            objectDescription: item.objectivedescription || '',
-            actionCode: item.actioncode,
-            actionName: item.actiondescription || '',
-            successIndicatorCode: item.successindicatorcode,
-            siName: item.successindicatordescription || '',
-            excellent: item.targetcriteriavalueexcellent || '',
-            veryGood: item.targetcriteriavalueverygood || '',
-            good: item.targetcriteriavaluegood || '',
-            fair: item.targetcriteriavaluefair || '',
-            poor: item.targetcriteriavaluepoor || '',
-            unit: item.unit || '',
-            remarks: item.remarksofcentres || 'No remarks provided',
-            rejectedBy: item.rejectedby || 'System',
-            rejectedAt: item.rejectedat || new Date().toISOString(),
-            originalData: item // Store original data for reference
-          });
-        }
-      });
-      
-      const rejectedWithRemarks = Array.from(uniqueRecords.values());
-      setRejectedRecords(rejectedWithRemarks);
-      
-      // Don't auto-enable rejected rows - let user click to enable them
-      console.log(`✅ ${rejectedWithRemarks.length} rejected records detected. User must click to enable each row.`);
-      
-      return rejectedWithRemarks;
-    } catch (err) {
-      console.error(`❌ Error fetching rejected records:`, err);
-      setRejectedRecords([]);
       return [];
     }
   };
@@ -1189,25 +1012,10 @@ const OperationsTargetSettingPage = () => {
     fetchWeightAndUpdateRow(objectCode);
     
     // Fetch weight value for this specific SI
-    // For multipleEntries = Yes: Fetch and load the weight value immediately
-    // For multipleEntries = No: These use fixed performance level values (⭐ Excellent, 📈 Very Good, etc.)
     fetchWeightValue(objectCode, siCode).then(weightData => {
       if (weightData) {
         setRows(prev => prev.map(row =>
-          row.id === rowId 
-            ? { 
-                ...row, 
-                weightValue: weightData,
-                // For single-entry (multipleEntries = No): Load fixed performance level values
-                ...(isMultipleEntries === false && {
-                  excellent: '⭐ Excellent',
-                  veryGood: '📈 Very Good',
-                  good: '✓ Good',
-                  fair: '⬇️ Fair',
-                  poor: '❌ Poor'
-                })
-              } 
-            : row
+          row.id === rowId ? { ...row, weightValue: weightData } : row
         ));
       }
     });
@@ -1242,6 +1050,17 @@ const OperationsTargetSettingPage = () => {
   // Save row to backend and freeze it
   const saveRow = async (row) => {
     // Show confirmation before saving
+    const confirmResult = await showConfirmAlert('Save Entry?', 'Are you sure want to save this entry?');
+    if (!confirmResult.isConfirmed) {
+      return; // User cancelled
+    }
+
+    // Check if row status is T02 or T04 (locked statuses)
+    const status = row.statuscode || 'T01';
+    if (status === 'T02' || status === 'T04') {
+      showAlert(`Row is locked (${getRowStatusInfo(status).description}). Cannot edit.`, 'warning', 'Row Locked');
+      return;
+    }
     
     // Validate centre is selected
     if (!centrecode || centrecode.trim() === '') {
@@ -1304,9 +1123,9 @@ const OperationsTargetSettingPage = () => {
       setLoading(true);
       await saveRowToBackend(row);
       
-      // Freeze the row after successful save
+      // Immediately freeze the row after successful save (isEditing: false)
       setRows(rows.map(r =>
-        r.id === row.id ? { ...r, isEditing: false, isSaved: true, hasChanges: false } : r
+        r.id === row.id ? { ...r, isEditing: false, isSaved: true, hasChanges: false, statuscode: 'T01' } : r
       ));
       showAlert('Row saved successfully!', 'success', 'Success');
     } catch (err) {
@@ -1318,6 +1137,31 @@ const OperationsTargetSettingPage = () => {
 
   // Show alert before editing a saved row
   const requestEditRow = (rowId) => {
+    const row = rows.find(r => r.id === rowId);
+    if (!row) return;
+    
+    const status = row.statuscode || 'T01';
+    if (status === 'T02' || status === 'T04' || status === 'T05' || status === 'T06' || status === 'T07') {
+      showAlert(`Row is locked (${getRowStatusInfo(status).description}). Cannot edit.`, 'warning', 'Row Locked');
+      return;
+    }
+    
+    // For T03 (Rejected rows), allow direct editing without confirmation
+    if (status === 'T03') {
+      setRows(rows.map(r => {
+        if (r.id === rowId) {
+          return { 
+            ...r, 
+            isEditing: true,
+            hasChanges: false,
+            originalValues: { ...r }
+          };
+        }
+        return r;
+      }));
+      return;
+    }
+
     showConfirmAlert('Edit Row?', 'Are you sure you want to edit this row?').then((result) => {
       if (result.isConfirmed) {
         setRows(rows.map(r => {
@@ -1373,9 +1217,10 @@ const OperationsTargetSettingPage = () => {
     const row = rows.find(r => r.id === rowId);
     if (!row) return;
     
-    // Can only delete if row is saved and not currently editing
-    if (!row.isSaved || row.isEditing) {
-      showAlert('Can only delete saved rows', 'warning', 'Not Allowed');
+    // Check if row status is T02 or T04 (locked statuses)
+    const status = row.statuscode || 'T01';
+    if (status === 'T02' || status === 'T04') {
+      showAlert(`Row is locked (${getRowStatusInfo(status).description}). Cannot delete.`, 'warning', 'Row Locked');
       return;
     }
     
@@ -1397,6 +1242,275 @@ const OperationsTargetSettingPage = () => {
     });
   };
 
+  // ===== RESUBMIT REJECTED ROW =====
+  // Resubmit a rejected row (T03 status) to change it back to T02 (Submitted)
+  // Use new API endpoint: PUT /api/targets/resubmit with full request body
+  const resubmitRejectedRow = async (row) => {
+    // Show confirmation before resubmitting
+    const confirmResult = await showConfirmAlert('Resubmit Entry?', 'Are you sure you want to resubmit this rejected entry for approval?');
+    if (!confirmResult.isConfirmed) {
+      return; // User cancelled
+    }
+
+    // Validate performance levels before resubmitting (same validation as save)
+    const validationResult = validatePerformanceLevels(row);
+    if (!validationResult.isValid) {
+      setTooltipError({
+        rowId: row.id,
+        field: validationResult.field,
+        message: validationResult.message
+      });
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const fyYear = selectedFY;
+
+      // Find centre short name from loaded centres
+      const selectedCentreObj = centres.find(c => c.centrecode === centrecode) || null;
+
+      // Build complete payload with all data (same structure as save but for resubmit)
+      const payload = {
+        financialyear: fyYear,
+        centrecode: centrecode,
+        objectivecode: row.objectCode,
+        actioncode: row.actionCode,
+        successindicatorcode: row.successIndicatorCode,
+        centreshortname: selectedCentreObj ? selectedCentreObj.centreshortname : '',
+        objectivedescription: row.objectDescription || '',
+        actiondescription: row.actionName || '',
+        successindicatordescription: row.siName || '',
+        unit: row.unit || '',
+        targetsetvalue: row.excellent || '',
+        weightperunitofactivity: row.weightValue?.value || 0,
+        targetcriteriavalueexcellent: row.excellent || '',
+        // Include optional performance level fields if they have values
+        targetcriteriavalueverygood: (row.veryGood && String(row.veryGood).trim() !== '') ? row.veryGood : null,
+        targetcriteriavaluegood: (row.good && String(row.good).trim() !== '') ? row.good : null,
+        targetcriteriavaluefair: (row.fair && String(row.fair).trim() !== '') ? row.fair : null,
+        targetcriteriavaluepoor: (row.poor && String(row.poor).trim() !== '') ? row.poor : null,
+        achievementstatuscode: null,
+        achievementstatusdescription: null,
+        validforpercentage: row.selectedWeightType === 'PERCENTAGE' ? 'Y' : 'N',
+        targetvalueachieved: null,
+        achievementweightperunitofactivity: null,
+        actualachievementpercentage: null,
+        remarksofcentres: '',
+        remarksofhqorapexcommittee: ''
+      };
+
+      console.log('📝 Resubmit payload:', payload);
+
+      // Call new resubmit API endpoint with PUT and request body
+      const submitUrl = `http://localhost:8080/api/targets/resubmit`;
+      console.log('🔄 Resubmitting row via PUT:', submitUrl);
+
+      const response = await fetch(submitUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to resubmit row';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+
+      const result = await response.json();
+      console.log('✅ Row resubmitted successfully:', result);
+
+      // Update row status to T02 (Submitted) and freeze it
+      setRows(rows.map(r =>
+        r.id === row.id ? { ...r, statuscode: 'T02', isEditing: false, hasChanges: false, approvalRemarks: '' } : r
+      ));
+
+      // Clear any tooltip errors
+      setTooltipError(null);
+
+      showAlert('Entry resubmitted successfully!', 'success', 'Success');
+    } catch (err) {
+      showAlert('Error: ' + err.message, 'error', 'Error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ===== APPROVER WORKFLOW FUNCTIONS (Only for APR role) =====
+  
+  // Request approval for a row
+  const requestApproveRow = (rowId) => {
+    const row = rows.find(r => r.id === rowId);
+    if (!row) return;
+
+    showConfirmAlert('Approve Entry?', 'Are you sure want to approve this entry?').then((result) => {
+      if (result.isConfirmed) {
+        approveRowToBackend(row);
+      }
+    });
+  };
+
+  // Approve row to backend
+  const approveRowToBackend = async (row) => {
+    try {
+      setLoading(true);
+      const fyYear = selectedFY;
+
+      const payload = {
+        financialyear: fyYear,
+        centrecode: centrecode,
+        objectivecode: row.objectCode,
+        actioncode: row.actionCode,
+        successindicatorcode: row.successIndicatorCode,
+        approvalstatus: 'APPROVED',
+        approvalremarks: '',
+        approvedby: userid,
+        approvedat: new Date().toISOString()
+      };
+
+      const response = await fetch('http://localhost:8080/api/targets/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to approve row';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+
+      // Update row status
+      setRows(rows.map(r =>
+        r.id === row.id 
+          ? { ...r, approvalStatus: 'APPROVED', approvedBy: userid, approvedAt: new Date().toISOString() } 
+          : r
+      ));
+
+      showAlert('Entry approved successfully!', 'success', 'Success');
+    } catch (err) {
+      showAlert('Error: ' + err.message, 'error', 'Error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Request rejection with remarks
+  const requestRejectRow = (rowId) => {
+    const row = rows.find(r => r.id === rowId);
+    if (!row) return;
+
+    // Show remarks modal
+    setRemarksData({ rowId, remarks: '' });
+    setShowRemarksModal(true);
+  };
+
+  // Submit rejection with remarks
+  const submitRejectWithRemarks = async () => {
+    if (!remarksData.remarks || remarksData.remarks.trim() === '') {
+      showAlert('Please enter rejection remarks', 'warning', 'Remarks Required');
+      return;
+    }
+
+    const row = rows.find(r => r.id === remarksData.rowId);
+    if (!row) return;
+
+    try {
+      setLoading(true);
+      const fyYear = selectedFY;
+
+      const payload = {
+        financialyear: fyYear,
+        centrecode: centrecode,
+        objectivecode: row.objectCode,
+        actioncode: row.actionCode,
+        successindicatorcode: row.successIndicatorCode,
+        approvalstatus: 'REJECTED',
+        approvalremarks: remarksData.remarks.trim(),
+        approvedby: userid,
+        approvedat: new Date().toISOString()
+      };
+
+      const response = await fetch('http://localhost:8080/api/targets/reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to reject row';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+
+      // Update row status
+      setRows(rows.map(r =>
+        r.id === row.id 
+          ? { ...r, approvalStatus: 'REJECTED', approvalRemarks: remarksData.remarks.trim(), approvedBy: userid, approvedAt: new Date().toISOString() } 
+          : r
+      ));
+
+      setShowRemarksModal(false);
+      setRemarksData({ rowId: null, remarks: '' });
+      showAlert('Entry rejected with remarks!', 'success', 'Success');
+    } catch (err) {
+      showAlert('Error: ' + err.message, 'error', 'Error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ===== STATUS CODE HELPER FUNCTIONS =====
+  // Get status info: color, label, editable flag
+  const getRowStatusInfo = (statuscode) => {
+    const statuses = {
+      'T01': { label: '📝 Saved', color: '#e6f4ff', borderColor: '#0066cc', textColor: '#0066cc', icon: '📝', editable: true, description: 'Targets Setting - Editable', showButtons: true },
+      'T02': { label: '🔒 Submitted', color: '#fff3cd', borderColor: '#ff9800', textColor: '#ff6600', icon: '🔒', editable: false, description: 'Submitted for Approval - Locked', showButtons: true },
+      'T03': { label: '⚠️ Rejected', color: '#ffe6e6', borderColor: '#dc3545', textColor: '#dc3545', icon: '⚠️', editable: true, description: 'Sent for Resubmission - Editable', hasRejection: true, showButtons: true },
+      'T04': { label: '✓ Approved', color: '#d4edda', borderColor: '#28a745', textColor: '#155724', icon: '✓', editable: false, description: 'Approved by Centre Level - Locked', showButtons: true },
+      'T05': { label: '🤔 Clarification', color: '#fff8e1', borderColor: '#fbc02d', textColor: '#f57f17', icon: '🤔', editable: false, description: 'Clarification Required', showButtons: true },
+      'T06': { label: '👁️ Review', color: '#f3e5f5', borderColor: '#9c27b0', textColor: '#6a1b9a', icon: '👁️', editable: false, description: 'Under Review', showButtons: true },
+      'T07': { label: '✅ Sanctioned', color: '#e8f5e9', borderColor: '#4caf50', textColor: '#1b5e20', icon: '✅', editable: false, description: 'Sanctioned - Locked', showButtons: true }
+    };
+    return statuses[statuscode] || statuses['T01'];
+  };
+
+  // Check if row is editable based on status
+  const isRowEditable = (statuscode) => {
+    const info = getRowStatusInfo(statuscode);
+    return info.editable;
+  };
+
+  // Check if row should show action buttons (always show, but may be disabled)
+  const canShowActionButtons = (statuscode) => {
+    return true;  // Always show buttons, disable them based on status
+  };
+
+  // Check if buttons should be disabled (locked statuses)
+  const areButtonsDisabled = (statuscode) => {
+    // T02 (Submitted), T04 (Approved), T05 (Clarification), T06 (Review), T07 (Sanctioned) are locked
+    return statuscode === 'T02' || statuscode === 'T04' || statuscode === 'T05' || statuscode === 'T06' || statuscode === 'T07';
+  };
+
   // Add a new entry row for an objective that allows multiple entries
   // Inserts the new entry directly below the last existing entry for that objective
   const addNewEntryForObjective = async (objectCode) => {
@@ -1404,9 +1518,16 @@ const OperationsTargetSettingPage = () => {
     const objective = objectives.find(o => o.objectivecode === objectCode);
     if (!objective) return;
     
+    // Check if objective allows multiple entries - if not, show error
     const allowsMultiple = objective.multipleentries === 'Yes';
     if (!allowsMultiple) {
-      showAlert('This objective does not allow multiple entries', 'info', 'Not Allowed');
+      showAlert('This objective allows only ONE entry. Cannot add more.', 'info', 'Single Entry Only');
+      return;
+    }
+    
+    // Check if form is locked
+    if (isFormSubmitted) {
+      showAlert('Form is locked - Already submitted. Cannot add new entries.', 'warning', 'Form Locked');
       return;
     }
 
@@ -1417,8 +1538,8 @@ const OperationsTargetSettingPage = () => {
     const defaultActionCode = '';
     const defaultActionName = '';
 
-    // Get weight type from weights cache - will be populated by fetchWeightAndUpdateRow
-    const weightTypeFromAPI = weights[objectCode]?.weightType || null;
+    // Default weight info from weights cache if available
+    const defaultWeight = weights[objectCode] || null;
 
     // Create new row
     const newRow = {
@@ -1441,8 +1562,8 @@ const OperationsTargetSettingPage = () => {
       successIndicatorCode: '',
       siName: '',
       siDescription: '',
-      weightInfo: weights[objectCode] ? { type: weights[objectCode].weightType, unit: weights[objectCode].unit, objectivecode: objectCode } : null,
-      selectedWeightType: weightTypeFromAPI,  // Use weight type from API if available
+      weightInfo: defaultWeight ? { type: defaultWeight.weightType, unit: defaultWeight.unit, objectivecode: objectCode } : null,
+      selectedWeightType: defaultWeight ? defaultWeight.weightType : null,
       excellent: '',
       veryGood: '',
       good: '',
@@ -1464,22 +1585,17 @@ const OperationsTargetSettingPage = () => {
       return [...prev.slice(0, idx + 1), newRow, ...prev.slice(idx + 1)];
     });
 
-    // Fetch actions for this objective (IMPORTANT: For new entries to show actions in dropdown)
-    if (!actions[objectCode]) {
-      fetchActions(objectCode);
-    }
-
     // If we have a default action, fetch its success indicators to populate options
     if (defaultActionCode) {
       fetchSuccessIndicators(objectCode, defaultActionCode);
     }
 
-    // Ensure weight info is loaded for this objective (if not already loaded)
-    if (!weights[objectCode]) {
+    // Ensure weight info is loaded for this objective
+    if (!defaultWeight) {
       fetchWeightAndUpdateRow(objectCode);
     }
 
-    console.log(`✅ New entry #${newRow.entryNumber} added for ${objectCode} with WeightType: ${weightTypeFromAPI}`);
+    console.log(`New entry #${newRow.entryNumber} added for ${objectCode}`);
   };
 
   // Get count of entries for an objective
@@ -1516,34 +1632,9 @@ const OperationsTargetSettingPage = () => {
     
     // Check if this is a single-entry objective (multipleentries = 'No')
     const isSingleEntry = !row.multipleEntries;  // multipleEntries = false means single-entry
+    const status = row.statuscode || 'T01';
     
-    // ===== STATUS CODE BASED LOGIC =====
-    // T02 = Submitted = DISABLE (read-only)
-    // T03 = Rejected = ENABLE for editing
-    // Empty statuscode = Fresh template row = SHOW TEMPLATE VALUES (for single-entry objectives)
-    // No status or other = NEW entry = ENABLE by default
-    const isT02Status = row.statuscode === 'T02';
-    const isT03Status = row.statuscode === 'T03';
-    const isFreshTemplate = !row.statuscode || row.statuscode === '';  // Empty statuscode = fresh template
-    const isNewEntry = !row.isSaved;
-    
-    // ===== FRESH TEMPLATE ROWS: Show pre-loaded template values (single-entry with auto-selected SI) =====
-    // Show template emoji values ONLY when:
-    // 1. Fresh template row (statuscode empty)
-    // 2. Single-entry objective
-    // 3. SI has been auto-selected (successIndicatorCode is not empty)
-    // 4. Weight type has been populated (selectedWeightType is not null)
-    if (isFreshTemplate && isNewEntry && isSingleEntry && row.successIndicatorCode && row.selectedWeightType) {
-      // Show the pre-loaded emoji values for fresh single-entry template rows
-      const templateValue = value || '—';
-      return (
-        <small className="text-success fw-bold">
-          {templateValue}
-        </small>
-      );
-    }
-    
-    // AFTER SAVING: All fields are disabled (frozen) until Edit is clicked
+    // AFTER SAVING: Check based on STATUS CODE
     if (row.isSaved && !row.isEditing) {
       // For DATE type: show formatted date, otherwise show value as-is
       let displayValue = '';
@@ -1559,31 +1650,29 @@ const OperationsTargetSettingPage = () => {
       );
     }
     
-    // Performance level fields logic based on STATUS CODE ONLY:
-    // T02 = DISABLED (completely submitted)
-    // T03 = ENABLED (rejected, needs fixing)
-    // No status (new/normal) = ENABLED by default
-    // Saved rows not being edited = DISABLED (show as read-only)
+    // Performance level fields logic based on STATUS CODE:
+    // T01 (Draft): EDITABLE
+    // T02 (Submitted): DISABLED
+    // T03 (Resubmit): EDITABLE
+    // T04 (Approved): DISABLED
+    // NEW entries (not saved): ALWAYS ENABLED
     let isPerformanceFieldDisabled = false;
     
-    // T02 Status: Always disabled (completely submitted) UNLESS it's also T03 (rejected, needs fixing)
-    if (isT02Status && !isT03Status) {
+    // If row has a status code, use that to determine editability
+    if (row.isSaved && row.statuscode) {
+      const isEditable = isRowEditable(row.statuscode);
+      isPerformanceFieldDisabled = !isEditable;
+    } else if (row.isSaved && !row.isEditing) {
+      // Saved row without explicit status, not in edit mode: DISABLED
       isPerformanceFieldDisabled = true;
-    }
-    // T03 Status: Always enabled (rejected, allow editing) - override T02
-    else if (isT03Status) {
+    } else if (!row.isSaved) {
+      // New/fresh entry: ALWAYS ENABLED
       isPerformanceFieldDisabled = false;
-    } 
-    // Saved rows not being edited: Show as read-only (disabled)
-    else if (row.isSaved && !row.isEditing) {
-      isPerformanceFieldDisabled = true;
-    } 
-    // New entries or editing: Enable based on SI requirement
-    else if (row.isEditing || isNewEntry) {
+    } else if (row.isSaved && row.isEditing) {
+      // Editing a saved row: Enable based on objective type
       isPerformanceFieldDisabled = isSingleEntry ? false : (!row.successIndicatorCode || isDisabled);
-    } 
-    // Default: Enable
-    else {
+    } else {
+      // Multi-entry, not saved yet, SI required
       isPerformanceFieldDisabled = isSingleEntry ? false : (!row.successIndicatorCode || isDisabled);
     }
 
@@ -1951,25 +2040,35 @@ const OperationsTargetSettingPage = () => {
       return;
     }
 
-    // Step 2: Get all objectives that match current centre and financial year
-    const applicableObjectives = objectives.filter(obj => {
-      if (obj.mandatory === 'HQ') {
-        return isCurrentCentreHQ();
-      }
-      return true;
-    });
+    // Step 2: Check if centre is HQ (centre code 13)
+    const isHQCentre = centrecode === '13';
+
+    // Step 3: Get ALL objectives (will be filtered during validation)
+    let applicableObjectives = objectives;
 
     if (applicableObjectives.length === 0) {
-      showAlert('No objectives available for this centre', 'info', 'No Data');
+      showAlert('No objectives available', 'info', 'No Data');
       return;
     }
 
-    // Step 3: Check ONLY MANDATORY objectives for at least one saved row
-    // Optional objectives are NOT validated
+    // Step 4: Check MANDATORY objectives for at least one saved row
+    // For HQ objectives (mandatory='HQ'): Only validate if user is at centre 13 (HQ)
+    // For regular mandatory (mandatory='Yes'): Always validate
     const missingObjectives = [];
     for (const obj of applicableObjectives) {
-      // Only validate if objective is mandatory
-      if (obj.mandatory === 'Yes' || obj.mandatory === 'HQ') {
+      let isMandatory = false;
+      
+      // Check if this objective is mandatory for current centre
+      if (obj.mandatory === 'Yes') {
+        // Regular mandatory for all centres
+        isMandatory = true;
+      } else if (obj.mandatory === 'HQ' && isHQCentre) {
+        // HQ-only mandatory objectives - only validate if at HQ centre (13)
+        isMandatory = true;
+      }
+      
+      // If mandatory, check for saved rows
+      if (isMandatory) {
         const savedRowsForObj = rows.filter(r => r.objectCode === obj.objectivecode && r.isSaved);
         if (savedRowsForObj.length === 0) {
           missingObjectives.push(`${obj.objectivecode} - ${obj.objectivedescription}`);
@@ -2003,6 +2102,91 @@ const OperationsTargetSettingPage = () => {
   };
 
   // Validate and approve all data (Approver role only)
+  const validateAndApproveAllData = async () => {
+    // Count approval statuses
+    const approved = rows.filter(r => r.approvalStatus === 'APPROVED').length;
+    const rejected = rows.filter(r => r.approvalStatus === 'REJECTED').length;
+    const pending = rows.filter(r => r.approvalStatus === 'PENDING').length;
+
+    // If there are rejected entries, show warning
+    if (rejected > 0) {
+      const warningMsg = `You have ${rejected} rejected entry(ies).\n\nApproved: ${approved}\nRejected: ${rejected}\nPending: ${pending}\n\nDo you want to approve with these rejected cases?`;
+      
+      showConfirmAlert(
+        'Approve All with Rejected Cases?',
+        warningMsg
+      ).then((result) => {
+        if (result.isConfirmed) {
+          approveAllToBackend();
+        }
+      });
+    } else if (pending > 0) {
+      showAlert(`You have ${pending} pending entry(ies). Please approve or reject them first.`, 'warning', 'Pending Entries');
+    } else {
+      // All approved
+      const summaryMessage = `Total Entries Approved: ${approved}\nFinancial Year: ${selectedFY}\nCentre: ${centrecode}`;
+      
+      showConfirmAlert(
+        'Approve All Data?',
+        `All entries are ready for approval!\n\n${summaryMessage}`
+      ).then((result) => {
+        if (result.isConfirmed) {
+          approveAllToBackend();
+        }
+      });
+    }
+  };
+
+  // Approve all to backend
+  const approveAllToBackend = async () => {
+    try {
+      setLoading(true);
+      const fyYear = selectedFY;
+      const approved = rows.filter(r => r.approvalStatus === 'APPROVED' || r.approvalStatus === 'PENDING').length;
+
+      const payload = {
+        financialyear: fyYear,
+        centrecode: centrecode,
+        approvedbatchcount: approved,
+        approvedbybatchby: userid,
+        approvedat: new Date().toISOString(),
+        rowdata: rows.filter(r => r.isSaved).map(r => ({
+          objectivecode: r.objectCode,
+          actioncode: r.actionCode,
+          successindicatorcode: r.successIndicatorCode,
+          approvalstatus: r.approvalStatus,
+          approvalremarks: r.approvalRemarks
+        }))
+      };
+
+      const response = await fetch('http://localhost:8080/api/targets/approveall', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to approve all entries';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
+      }
+
+      showAlert(`All entries approved successfully! ${approved} entries were processed.`, 'success', 'Success');
+      // Lock the form
+      setIsFormSubmitted(true);
+    } catch (err) {
+      showAlert('Error: ' + err.message, 'error', 'Error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Helper function to submit data to backend
   const submitAllData = async () => {
     try {
@@ -2068,78 +2252,53 @@ const OperationsTargetSettingPage = () => {
       )}
 
       {/* ===== IMPROVED CONTROLS SECTION - MADE SMALLER ===== */}
-      <div className="row g-2 mb-3">
-        <div className="col-lg-4">
-          <div className="card border-0 shadow-sm h-100" style={{borderRadius: '8px', overflow: 'hidden', background: 'linear-gradient(135deg, #fff9e6 0%, #fff3cc 100%)'}}>
+    <div className="row g-2 mb-3">
+        <div className="col-lg-3">
+          <div className="card border-0 shadow-sm h-100" style={{borderRadius: '8px', overflow: 'hidden'}}>
             <div className="card-body p-2">
-              <label className="form-label fw-bold mb-2" style={{fontSize: '0.85rem', color: '#d97706'}}>
-                🎭 Operation & Financial Year
+              <label className="form-label fw-bold mb-1" style={{fontSize: '0.85rem', color: '#495057'}}>
+                🎭 Operation Type
               </label>
-              <div style={{display: 'flex', flexDirection: 'column', gap: '0.5rem'}}>
-                <div 
-                  onClick={() => setOperation('TARGET_SETTING')}
-                  style={{
-                    padding: '0.5rem 0.6rem',
-                    backgroundColor: operation === 'TARGET_SETTING' ? '#0066cc' : '#e6f4ff',
-                    color: operation === 'TARGET_SETTING' ? 'white' : '#0066cc',
-                    borderRadius: '4px',
-                    border: operation === 'TARGET_SETTING' ? '1px solid #0066cc' : '1px solid #b3d9ff',
-                    cursor: 'pointer',
-                    fontSize: '0.85rem',
-                    fontWeight: '600',
-                    textAlign: 'center',
-                    transition: 'all 0.2s ease'
-                  }}
-                  onMouseEnter={(e) => {
-                    if (operation !== 'TARGET_SETTING') {
-                      e.currentTarget.style.backgroundColor = '#cce5ff';
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (operation !== 'TARGET_SETTING') {
-                      e.currentTarget.style.backgroundColor = '#e6f4ff';
-                    }
-                  }}
-                >
-                  🎯 TARGET SETTING - 2026-2027
-                </div>
-                <div 
-                  onClick={() => setOperation('TARGET_ACHIEVED')}
-                  style={{
-                    padding: '0.5rem 0.6rem',
-                    backgroundColor: operation === 'TARGET_ACHIEVED' ? '#0066cc' : '#e6f4ff',
-                    color: operation === 'TARGET_ACHIEVED' ? 'white' : '#0066cc',
-                    borderRadius: '4px',
-                    border: operation === 'TARGET_ACHIEVED' ? '1px solid #0066cc' : '1px solid #b3d9ff',
-                    cursor: 'pointer',
-                    fontSize: '0.85rem',
-                    fontWeight: '600',
-                    textAlign: 'center',
-                    transition: 'all 0.2s ease',
-                    opacity: 0.5,
-                    pointerEvents: 'none'
-                  }}
-                >
-                  ✅ ACHIEVED - 2025-2026
-                </div>
+              <div className="btn-group w-100" role="group" style={{fontSize: '0.75rem', marginBottom: '0.5rem'}}>
+                <input type="radio" className="btn-check" name="operation" id="targetSetting" value="TARGET_SETTING" checked={operation === 'TARGET_SETTING'} onChange={(e) => setOperation(e.target.value)} />
+                <label className="btn btn-outline-primary fw-semibold" htmlFor="targetSetting" style={{fontSize: '0.75rem', padding: '0.3rem 0.4rem', borderRadius: '6px 0 0 6px'}}>
+                  🎯 Setting
+                </label>
+                
+                <input type="radio" className="btn-check" name="operation" id="targetAchieved" value="TARGET_ACHIEVED" onChange={(e) => setOperation(e.target.value)} />
+                <label className="btn btn-outline-success fw-semibold" htmlFor="targetAchieved" style={{fontSize: '0.75rem', padding: '0.3rem 0.4rem', borderRadius: '0 6px 6px 0'}}>
+                  ✅ Achievement
+                </label>
+              </div>
+              <div style={{
+                fontSize: '0.8rem',
+                padding: '0.5rem 0.6rem',
+                backgroundColor: operation === 'TARGET_SETTING' ? '#fff3cd' : '#d4edda',
+                borderRadius: '4px',
+                color: operation === 'TARGET_SETTING' ? '#856404' : '#155724',
+                border: operation === 'TARGET_SETTING' ? '1px solid #ffc107' : '1px solid #c3e6cb',
+                fontWeight: '600',
+                textAlign: 'center'
+              }}>
+                {operation === 'TARGET_SETTING' ? '🎯 Target Setting - FY 2026-2027' : '✅ Achievement Setting - FY 2025-2026'}
               </div>
             </div>
           </div>
         </div>
 
-        <div className="col-lg-4">
-          <div className="card border-0 shadow-sm h-100" style={{borderRadius: '8px', overflow: 'hidden', background: 'linear-gradient(135deg, #f0f5ff 0%, #e8f0ff 100%)'}}>
+        <div className="col-lg-3">
+          <div className="card border-0 shadow-sm h-100" style={{borderRadius: '8px', overflow: 'hidden'}}>
             <div className="card-body p-2">
               <label className="form-label fw-bold mb-1" style={{
                 fontSize: '0.85rem',
-                color: (!centrecode || centrecode.trim() === '') ? '#dc3545' : '#0066cc'
+                color: (!centrecode || centrecode.trim() === '') ? '#dc3545' : '#495057'
               }}>
                 🏢 Centre Selection
                 {(!centrecode || centrecode.trim() === '') && (
                   <span className="badge bg-danger ms-1" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>REQ</span>
                 )}
               </label>
-          {String(assignedCentre).toUpperCase() === 'ALL' || Array.isArray(assignedCentre) ? (
+          {(String(assignedCentre).toUpperCase() === 'ALL' || Array.isArray(assignedCentre)) ? (
             <>
               <select
                 className={`form-select form-select-sm ${(!centrecode || centrecode.trim() === '') ? 'is-invalid border-danger border-2' : ''}`}
@@ -2161,239 +2320,16 @@ const OperationsTargetSettingPage = () => {
                   
                   console.log(`📍 Centre changed to: ${selectedCentre}, Fetching saved data...`);
                   
-                  // Clear rejected records and resubmission state first
-                  setRejectedRecords([]);
-                  setExpandedRejected({});
-                  setResubmissionRow(null);  // Clear any displayed rejection remarks from previous centre
-                  
                   fetchSavedRowsForCentre(selectedCentre, selectedFY).then(savedRows => {
                     console.log(`🔄 Setting rows with ${savedRows.length} saved rows`);
                     
-                    // Create template rows from objectives
-                    // For single-entry objectives: Create one row per predefined action
-                    // For multi-entry objectives: Create one empty template row
-                    let templateRows = [];
-                    objectives.forEach(obj => {
-                      const isSingleEntry = obj.multipleentries === 'No';
-                      
-                      if (isSingleEntry) {
-                        // For single-entry with predefined actions: Create one row per action
-                        const availableActions = (actions[obj.objectivecode] || []).filter(a => !a.actioncode.includes('XX'));
-                        
-                        if (availableActions.length > 0) {
-                          // Create a row for EACH action
-                          availableActions.forEach(action => {
-                            // Fetch success indicators for this action
-                            fetchSuccessIndicators(obj.objectivecode, action.actioncode);
-                            
-                            templateRows.push({
-                              id: `obj_${obj.objectivecode}_${action.actioncode}`,  // Unique ID per action
-                              objectCode: obj.objectivecode,
-                              objectDescription: obj.objectivedescription,
-                              mandatory: obj.mandatory,
-                              multipleEntries: false,
-                              predefinedParameters: obj.predefinedparameters === 'Yes',
-                              predefinedReferenceValues: obj.predefinedreferencevalues === 'Yes',
-                              changeInTargetCriteria: obj.changeintargetcriteria === 'Yes',
-                              predefinedActions: obj.predefinedactions === 'Yes',
-                              weightPeriod: obj.weightperinitofactivity,
-                              unit: obj.unit,
-                              unitPreferred: obj.unitpreferred,
-                              actionCode: action.actioncode,
-                              actionName: action.actiondescription || '',
-                              successIndicatorCode: '',
-                              siName: '',
-                              siDescription: '',
-                              weightInfo: null,
-                              selectedWeightType: null,
-                              // Pre-load fixed performance level values for single-entry
-                              excellent: '⭐ Excellent',
-                              veryGood: '📈 Very Good',
-                              good: '✓ Good',
-                              fair: '⬇️ Fair',
-                              poor: '❌ Poor',
-                              statuscode: '',  // Empty for fresh template rows
-                              isEditing: true,
-                              isSaved: false,
-                              hasChanges: false,
-                              originalValues: null
-                            });
-                          });
-                        } else {
-                          // Single-entry with NO actions: Still create one row (empty action)
-                          templateRows.push({
-                            id: `obj_${obj.objectivecode}`,
-                            objectCode: obj.objectivecode,
-                            objectDescription: obj.objectivedescription,
-                            mandatory: obj.mandatory,
-                            multipleEntries: false,
-                            predefinedParameters: obj.predefinedparameters === 'Yes',
-                            predefinedReferenceValues: obj.predefinedreferencevalues === 'Yes',
-                            changeInTargetCriteria: obj.changeintargetcriteria === 'Yes',
-                            predefinedActions: obj.predefinedactions === 'Yes',
-                            weightPeriod: obj.weightperinitofactivity,
-                            unit: obj.unit,
-                            unitPreferred: obj.unitpreferred,
-                            actionCode: '',
-                            actionName: '',
-                            successIndicatorCode: '',
-                            siName: '',
-                            siDescription: '',
-                            weightInfo: null,
-                            selectedWeightType: null,
-                            excellent: '⭐ Excellent',
-                            veryGood: '📈 Very Good',
-                            good: '✓ Good',
-                            fair: '⬇️ Fair',
-                            poor: '❌ Poor',
-                            statuscode: '',
-                            isEditing: true,
-                            isSaved: false,
-                            hasChanges: false,
-                            originalValues: null
-                          });
-                        }
-                      } else {
-                        // For multi-entry objectives: Create one empty template row
-                        templateRows.push({
-                          id: `obj_${obj.objectivecode}`,
-                          objectCode: obj.objectivecode,
-                          objectDescription: obj.objectivedescription,
-                          mandatory: obj.mandatory,
-                          multipleEntries: true,
-                          predefinedParameters: obj.predefinedparameters === 'Yes',
-                          predefinedReferenceValues: obj.predefinedreferencevalues === 'Yes',
-                          changeInTargetCriteria: obj.changeintargetcriteria === 'Yes',
-                          predefinedActions: obj.predefinedactions === 'Yes',
-                          weightPeriod: obj.weightperinitofactivity,
-                          unit: obj.unit,
-                          unitPreferred: obj.unitpreferred,
-                          actionCode: '',
-                          actionName: '',
-                          successIndicatorCode: '',
-                          siName: '',
-                          siDescription: '',
-                          weightInfo: null,
-                          selectedWeightType: null,
-                          excellent: '',
-                          veryGood: '',
-                          good: '',
-                          fair: '',
-                          poor: '',
-                          statuscode: '',
-                          isEditing: true,
-                          isSaved: false,
-                          hasChanges: false,
-                          originalValues: null
-                        });
-                      }
+                    setRows(prev => {
+                      const templateRows = prev.filter(r => !r.isSaved);
+                      const newRows = [...savedRows, ...templateRows];
+                      console.log(`📋 Total rows after centre change: ${newRows.length} (${savedRows.length} saved + ${templateRows.length} template)`);
+                      return newRows;
                     });
-                    
-                    // Merge: Use saved rows for those objectives, template for others
-                    // IMPORTANT: For single-entry objectives, filter by objectCode+actionCode combination
-                    // For multi-entry objectives, filter by objectCode only
-                    const savedRowKeys = new Set(savedRows.map(r => `${r.objectCode}_${r.actionCode}`));
-                    const templateRowsFiltered = templateRows.filter(t => {
-                      // Skip template row if there's a saved row with same objectCode+actionCode
-                      return !savedRowKeys.has(`${t.objectCode}_${t.actionCode}`);
-                    });
-                    
-                    console.log(`📊 Merge Info:`);
-                    console.log(`  - Saved rows count: ${savedRows.length}`);
-                    console.log(`  - Template rows created: ${templateRows.length}`);
-                    console.log(`  - Saved row keys: ${Array.from(savedRowKeys).join(', ')}`);
-                    console.log(`  - Template rows after filter: ${templateRowsFiltered.length}`);
-                    templateRowsFiltered.forEach((row, idx) => {
-                      console.log(`    ✓ Template Row ${idx + 1}: ${row.objectCode} | Action: ${row.actionCode || '(empty)'}`);
-                    });
-                    console.log(`  - Final total: ${savedRows.length + templateRowsFiltered.length}`);
-                    
-                    const finalRows = [...savedRows, ...templateRowsFiltered];
-                    
-                    setRows(finalRows);
-                    console.log(`📋 Total rows after centre change: ${finalRows.length} (${savedRows.length} saved + ${finalRows.length - savedRows.length} templates)`);
-                    
-                    // CRITICAL: Fetch weights and actions for template objectives
-                    // Use Promise.all to ensure all weights load before moving forward
-                    const weightPromises = templateRowsFiltered
-                      .filter(row => !weights[row.objectCode])
-                      .map(row => {
-                        console.log(`🔄 Fetching weight for template objective: ${row.objectCode}`);
-                        return fetch(`http://localhost:8080/api/objectives/getWeights/${row.objectCode}`)
-                          .then(response => response.json())
-                          .then(data => {
-                            console.log(`✅ Weight loaded for ${row.objectCode}:`, data);
-                            // Directly update weights state
-                            setWeights(prev => ({
-                              ...prev,
-                              [row.objectCode]: data
-                            }));
-                            // Update rows with weight type - ALL rows for this objective
-                            setRows(prev => prev.map(r => 
-                              r.objectCode === row.objectCode 
-                                ? { ...r, selectedWeightType: data.weightType }
-                                : r
-                            ));
-                            console.log(`✅ Updated ${data.weightType} for all rows of ${row.objectCode}`);
-                          })
-                          .catch(err => console.error(`❌ Failed to fetch weight for ${row.objectCode}:`, err));
-                      });
-                    
-                    // Also fetch actions for dropdowns
-                    const actionPromises = templateRowsFiltered
-                      .filter(row => !actions[row.objectCode])
-                      .map(row => {
-                        console.log(`🔄 Fetching actions for template objective: ${row.objectCode}`);
-                        return fetch(`http://localhost:8080/api/actions/objective/${row.objectCode}`)
-                          .then(response => response.json())
-                          .then(data => {
-                            setActions(prev => ({
-                              ...prev,
-                              [row.objectCode]: data
-                            }));
-                            console.log(`✅ Actions loaded for ${row.objectCode}: ${data.length} actions`);
-                          })
-                          .catch(err => console.error(`❌ Failed to fetch actions for ${row.objectCode}:`, err));
-                      });
-                    
-                    // Wait for weights and actions to load
-                    Promise.all([...weightPromises, ...actionPromises])
-                      .then(() => {
-                        console.log(`✨ Stage 1 complete: Weights and Actions loaded`);
-                        
-                        // CRITICAL: Fetch Success Indicators for EACH UNIQUE OBJECTIVE
-                        // For single-entry: get SI once per objective (all actions use same SI)
-                        // For multi-entry: also get SI once per objective
-                        const uniqueObjectCodes = [...new Set(templateRowsFiltered.map(r => r.objectCode))];
-                        
-                        const siPromises = uniqueObjectCodes.map(objectCode => {
-                          console.log(`🔄 Stage 2: Fetching SI for objective ${objectCode}`);
-                          return fetch(`http://localhost:8080/api/successindicator/success/${objectCode}`)
-                            .then(response => response.json())
-                            .then(data => {
-                              console.log(`✅ SI loaded for ${objectCode}:`, data.length, 'indicators');
-                              setSuccessIndicators(prev => ({
-                                ...prev,
-                                [objectCode]: data
-                              }));
-                            })
-                            .catch(err => {
-                              console.error(`❌ Failed to fetch SI for ${objectCode}:`, err);
-                            });
-                        });
-                        
-                        // Wait for SI data to load, then the effect will auto-trigger
-                        Promise.all(siPromises)
-                          .then(() => {
-                            console.log(`🎯 Stage 2 complete: All SI data loaded - auto-select effect will trigger`);
-                          })
-                          .catch(err => console.error('Error loading SI data:', err));
-                      })
-                      .catch(err => console.error('Error in Stage 1:', err));
                   });
-                  
-                  // Also fetch rejected records for this centre and financial year
-                  fetchRejectedRecords(selectedCentre, selectedFY);
                 }}
                 style={{
                   fontSize: '0.8rem',
@@ -2432,67 +2368,67 @@ const OperationsTargetSettingPage = () => {
           </div>
         </div>
 
-        <div className="col-lg-4">
+        <div className="col-lg-5">
           <div className="card border-0 shadow-sm h-100" style={{borderRadius: '8px', overflow: 'hidden', background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f7ff 100%)'}}>
             <div className="card-body p-2">
-              <label className="form-label fw-bold mb-2" style={{fontSize: '0.75rem', color: '#0066cc', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
+              <label className="form-label fw-bold mb-2" style={{fontSize: '0.85rem', color: '#495057', display: 'block'}}>
                 📊 Data Status
               </label>
-
+              
               {/* Entry Stage Row */}
-              <div style={{marginBottom: '0.8rem'}}>
-                <div style={{fontSize: '0.65rem', fontWeight: 'bold', color: '#0066cc', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.4px'}}>
-                  🔵 Entry
+              <div style={{marginBottom: '1rem', paddingBottom: '0.75rem', borderBottom: '1px solid #b3d9ff'}}>
+                <div style={{fontSize: '0.75rem', fontWeight: 'bold', color: '#0066cc', marginBottom: '0.4rem'}}>
+                  🔹 Entry Stage
                 </div>
-                <div style={{display: 'flex', gap: '0.3rem', flexWrap: 'wrap'}}>
-                  <div className="badge" style={{fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: '#007bff', color: 'white', fontWeight: '600'}}>
-                    💾 {rows.filter(r => r.isSaved && r.statusCode === 'T01').length}
-                  </div>
-                  <div className="badge" style={{fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: '#dc3545', color: 'white', fontWeight: '600'}}>
-                    ⚠️ {rejectedRecords.length}
-                  </div>
-                  <div className="badge" style={{fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: '#28a745', color: 'white', fontWeight: '600'}}>
-                    ✅ {rows.filter(r => r.isSaved && r.statusCode === 'T02').length}
-                  </div>
+                <div style={{fontSize: '0.7rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
+                  <span className="badge bg-primary" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>
+                    📝 Saved: {rows.filter(r => r.isSaved).length}
+                  </span>
+                  <span className="badge bg-warning" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>
+                    ⚠️ Rejected: {rows.filter(r => r.statuscode === 'REJECTED').length}
+                  </span>
+                  <span className="badge bg-success" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>
+                    ✓ Approved: {rows.filter(r => r.statuscode === 'APPROVED').length}
+                  </span>
                 </div>
               </div>
 
               {/* Review Stage Row */}
-              <div style={{marginBottom: '0.8rem'}}>
-                <div style={{fontSize: '0.65rem', fontWeight: 'bold', color: '#0066cc', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.4px'}}>
-                  🔍 Review
+              <div style={{marginBottom: '1rem', paddingBottom: '0.75rem', borderBottom: '1px solid #b3d9ff'}}>
+                <div style={{fontSize: '0.75rem', fontWeight: 'bold', color: '#0066cc', marginBottom: '0.4rem'}}>
+                  🔹 Review Stage
                 </div>
-                <div style={{display: 'flex', gap: '0.3rem', flexWrap: 'wrap'}}>
-                  <div className="badge" style={{fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: '#6c757d', color: 'white', fontWeight: '600'}}>
-                    📋 0
-                  </div>
-                  <div className="badge" style={{fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: '#17a2b8', color: 'white', fontWeight: '600'}}>
-                    👁️ 0
-                  </div>
+                <div style={{fontSize: '0.7rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
+                  <span className="badge bg-info" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>
+                    👁️ Review: {rows.filter(r => r.approvalStatus === 'PENDING').length}
+                  </span>
+                  <span className="badge bg-secondary" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>
+                    ❓ Clarification: 0
+                  </span>
+                  <span className="badge bg-success" style={{fontSize: '0.65rem', padding: '0.25rem 0.4rem'}}>
+                    ✅ Sanctioned: {rows.filter(r => r.approvalStatus === 'APPROVED').length}
+                  </span>
                 </div>
               </div>
 
-              {/* Action Buttons */}
-              <div style={{display: 'flex', gap: '0.3rem', marginTop: '0.6rem'}}>
-                <button
-                  className="btn btn-sm fw-bold flex-grow-1"
-                  onClick={() => validateAndSubmitAllData()}
-                  disabled={!centrecode || centrecode.trim() === '' || loading}
-                  style={{
-                    fontSize: '0.7rem',
-                    padding: '0.3rem',
-                    borderRadius: '4px',
-                    backgroundColor: (!centrecode || centrecode.trim() === '') ? '#ccc' : '#0066cc',
-                    border: 'none',
-                    cursor: (!centrecode || centrecode.trim() === '') ? 'not-allowed' : 'pointer',
-                    color: 'white',
-                    fontWeight: '600'
-                  }}
-                  title="Submit all data to backend"
-                >
-                  {loading ? 'Submitting...' : '✅ Submit All'}
-                </button>
-              </div>
+              {/* Submit Button */}
+              <button
+                className="btn btn-primary fw-bold w-100"
+                onClick={() => validateAndSubmitAllData()}
+                disabled={!centrecode || centrecode.trim() === '' || loading || isFormSubmitted}
+                style={{
+                  fontSize: '0.75rem',
+                  padding: '0.3rem',
+                  borderRadius: '4px',
+                  backgroundColor: (!centrecode || centrecode.trim() === '' || isFormSubmitted) ? '#ccc' : '#0066cc',
+                  border: 'none',
+                  cursor: (!centrecode || centrecode.trim() === '' || isFormSubmitted) ? 'not-allowed' : 'pointer',
+                  opacity: isFormSubmitted ? 0.6 : 1
+                }}
+                title={isFormSubmitted ? '🔒 Form already submitted' : ''}
+              >
+                {isFormSubmitted ? '🔒 Completed' : loading ? 'Submitting...' : '✅ Submit'}
+              </button>
             </div>
           </div>
         </div>
@@ -2537,22 +2473,20 @@ const OperationsTargetSettingPage = () => {
                       boxShadow: '0 2px 6px rgba(0, 102, 204, 0.1)'
                     }}>
                       <th width="18%" style={{
-                        textAlign: 'left',
+                        textAlign: 'center',
                         fontSize: '0.8rem',
                         fontWeight: '700',
                         padding: '0.75rem 0.5rem',
                         color: '#0066cc',
-                        letterSpacing: '0.5px',
-                        borderRight: '1px solid #dee2e6'
-                      }}>📊 Action</th>
+                        letterSpacing: '0.5px'
+                      }}>📋 Action Code</th>
                       <th width="11%" style={{
-                        textAlign: 'left',
+                        textAlign: 'center',
                         fontSize: '0.8rem',
                         fontWeight: '700',
                         padding: '0.75rem 0.5rem',
                         color: '#0066cc',
-                        letterSpacing: '0.5px',
-                        borderRight: '1px solid #dee2e6'
+                        letterSpacing: '0.5px'
                       }}>🎯 Success Indicator</th>
                       <th width="2%" style={{
                         textAlign: 'center',
@@ -2560,8 +2494,7 @@ const OperationsTargetSettingPage = () => {
                         fontWeight: '700',
                         padding: '0.75rem 0.3rem',
                         color: '#0066cc',
-                        letterSpacing: '0.5px',
-                        borderRight: '1px solid #dee2e6'
+                        letterSpacing: '0.5px'
                       }}>⚖️ Type</th>
                       <th width="2%" style={{
                         textAlign: 'center',
@@ -2569,8 +2502,7 @@ const OperationsTargetSettingPage = () => {
                         fontWeight: '700',
                         padding: '0.75rem 0.3rem',
                         color: '#0066cc',
-                        letterSpacing: '0.5px',
-                        borderRight: '1px solid #dee2e6'
+                        letterSpacing: '0.5px'
                       }}>📊 Weight</th>
                       <th width="8%" style={{
                         textAlign: 'center',
@@ -2579,7 +2511,7 @@ const OperationsTargetSettingPage = () => {
                         padding: '0.5rem 0.3rem',
                         backgroundColor: '#d4e9ff',
                         color: '#004db3',
-                        borderRight: '1px solid #0066cc',
+                        borderRadius: '6px 0 0 0',
                         letterSpacing: '0.5px'
                       }}>⭐ Excellent</th>
                       <th width="8%" style={{
@@ -2589,7 +2521,6 @@ const OperationsTargetSettingPage = () => {
                         padding: '0.5rem 0.3rem',
                         backgroundColor: '#d4e9ff',
                         color: '#004db3',
-                        borderRight: '1px solid #0066cc',
                         letterSpacing: '0.5px'
                       }}>📈 Very Good</th>
                       <th width="8%" style={{
@@ -2599,7 +2530,6 @@ const OperationsTargetSettingPage = () => {
                         padding: '0.5rem 0.3rem',
                         backgroundColor: '#d4e9ff',
                         color: '#004db3',
-                        borderRight: '1px solid #0066cc',
                         letterSpacing: '0.5px'
                       }}>✓ Good</th>
                       <th width="8%" style={{
@@ -2609,7 +2539,6 @@ const OperationsTargetSettingPage = () => {
                         padding: '0.5rem 0.3rem',
                         backgroundColor: '#d4e9ff',
                         color: '#004db3',
-                        borderRight: '1px solid #0066cc',
                         letterSpacing: '0.5px'
                       }}>⬇️ Fair</th>
                       <th width="8%" style={{
@@ -2619,7 +2548,7 @@ const OperationsTargetSettingPage = () => {
                         padding: '0.5rem 0.3rem',
                         backgroundColor: '#d4e9ff',
                         color: '#004db3',
-                        borderRight: '1px solid #0066cc',
+                        borderRadius: '0 6px 0 0',
                         letterSpacing: '0.5px'
                       }}>❌ Poor</th>
                       <th width="16%" style={{
@@ -2651,34 +2580,30 @@ const OperationsTargetSettingPage = () => {
                       // Filter rows for this objective
                       let objEntries = rows.filter(r => r.objectCode === obj.objectivecode);
                       
-                      // ===== APPLY SAVED RECORDS FILTER (only for saved records) =====
-                      // This filter only applies when viewing saved records, not fresh/new data
-                      if (savedRecordsFilter === 'saved') {
-                        // Show only non-rejected saved rows
-                        objEntries = objEntries.filter(r => {
-                          if (!r.isSaved) return true; // Keep fresh/new rows
-                          // For saved rows, exclude rejected ones
-                          const isRejected = rejectedRecords.some(
-                            rej => rej.objectCode === r.objectCode &&
-                                   rej.actionCode === r.actionCode &&
-                                   rej.successIndicatorCode === r.successIndicatorCode
-                          );
-                          return !isRejected;
-                        });
-                      } else if (savedRecordsFilter === 'rejected') {
-                        // Show only rejected saved rows
-                        objEntries = objEntries.filter(r => {
-                          if (!r.isSaved) return false; // Don't show fresh/new rows
-                          // For saved rows, show only rejected ones
-                          const isRejected = rejectedRecords.some(
-                            rej => rej.objectCode === r.objectCode &&
-                                   rej.actionCode === r.actionCode &&
-                                   rej.successIndicatorCode === r.successIndicatorCode
-                          );
-                          return isRejected;
-                        });
+                      // For SINGLE-ENTRY objectives (multipleentries = 'No'):
+                      // If there's already a saved row with same action + successindicator, don't show duplicates
+                      const isSingleEntry = obj.multipleentries !== 'Yes';
+                      if (isSingleEntry) {
+                        const savedRows = objEntries.filter(r => r.isSaved);
+                        if (savedRows.length > 0) {
+                          // For each saved row, exclude unsaved/template rows with same action + SI codes
+                          objEntries = objEntries.filter(r => {
+                            // Keep all saved rows
+                            if (r.isSaved) return true;
+                            // For unsaved rows, exclude if there's a saved row with same action + SI
+                            const hasSavedDuplicate = savedRows.some(saved => 
+                              saved.actionCode === r.actionCode && 
+                              saved.successIndicatorCode === r.successIndicatorCode
+                            );
+                            return !hasSavedDuplicate;
+                          });
+                        }
                       }
-                      // For 'all' filter, show everything
+                      
+                      // If form is submitted (T02), show ONLY saved rows (no empty templates)
+                      if (isFormSubmitted) {
+                        objEntries = objEntries.filter(r => r.isSaved);
+                      }
                       
                       const defaultWeight = weights[obj.objectivecode];
                       const allowsMultiple = obj.multipleentries === 'Yes';
@@ -2719,7 +2644,8 @@ const OperationsTargetSettingPage = () => {
                                     </h6>
                                     <div>
                                       {obj.mandatory === 'Yes' && <span className="badge bg-danger">MANDATORY</span>}
-                                    
+                                      {obj.mandatory === 'HQ' && centrecode === '13' && <span className="badge bg-danger">MANDATORY (HQ)</span>}
+                                      {obj.mandatory === 'HQ' && centrecode !== '13' && <span className="badge bg-info">HQ ONLY</span>}
                                     </div>
                                   </div>
                                 </div>
@@ -2740,58 +2666,74 @@ const OperationsTargetSettingPage = () => {
 
                           {/* Entry rows - only show if expanded */}
                           {expandedObjectives[obj.objectivecode] && objEntries.map(row => {
-                            // Get remarks for this row if it has T03 status
-                            const rejectedRecord = rejectedRecords.find(
-                              r => r.objectCode === row.objectCode &&
-                                   r.actionCode === row.actionCode &&
-                                   r.successIndicatorCode === row.successIndicatorCode
-                            );
-                            const isT02Status = row.statuscode === 'T02';
-                            const isT03Status = row.statuscode === 'T03';
-                            const remarks = rejectedRecord?.remarks || '';
+                            const status = row.statuscode || 'T01';
+                            const statusInfo = getRowStatusInfo(status);
+                            const rowBgColor = statusInfo.color;
+                            const rowBorderColor = statusInfo.borderColor;
+                            const hoverBgColor = status === 'T04' ? '#c8e6c9' : status === 'T02' ? '#ffe6b3' : status === 'T03' ? '#ffcccc' : '#f0f8ff';
                             
                             return (
                             <React.Fragment key={row.id}>
                               {/* SINGLE ROW: ALL DATA + PERFORMANCE + ACTIONS (11 columns) */}
                               <tr 
                                 className={row.isSaved ? 'bg-success bg-opacity-10' : 'bg-light'} 
-                                data-row-id={row.id}
-                                title={isT03Status && remarks ? `⚠️ T03 REJECTED\n\n${remarks}` : isT03Status ? '⚠️ T03 REJECTED - Needs fixing' : isT02Status ? '🔒 T02 SUBMITTED - Read Only' : ''}
                                 style={{
-                                borderLeft: isT02Status ? '5px solid #dc3545' : (isT03Status ? '5px solid #ffc107' : (row.isSaved ? '5px solid #28a745' : '4px solid #0066cc')),
-                                height: '40px',
-                                borderRadius: row.isSaved ? '4px 0 0 4px' : '0',
-                                fontWeight: row.isSaved ? '500' : 'normal',
-                                transition: 'background-color 0.2s ease',
-                                backgroundColor: isT02Status ? '#ffe5e5' : (isT03Status ? '#fffacd' : (row.isSaved ? '#d4edda' : '#f8f9fa')),
-                                cursor: isT03Status ? 'help' : 'default'
-                              }}
-                              onMouseEnter={(e) => {
-                                if (isT02Status) {
-                                  e.currentTarget.style.backgroundColor = '#ffcccc';
-                                } else if (isT03Status) {
-                                  e.currentTarget.style.backgroundColor = '#fff9c4';
-                                } else {
-                                  e.currentTarget.style.backgroundColor = row.isSaved ? '#c8e6c9' : '#f0f8ff';
-                                }
-                              }}
-                              onMouseLeave={(e) => {
-                                if (isT02Status) {
-                                  e.currentTarget.style.backgroundColor = '#ffe5e5';
-                                } else if (isT03Status) {
-                                  e.currentTarget.style.backgroundColor = '#fffacd';
-                                } else {
-                                  e.currentTarget.style.backgroundColor = row.isSaved ? '#d4edda' : '#f8f9fa';
-                                }
-                              }}
+                                  borderLeft: `5px solid ${rowBorderColor}`,
+                                  height: '40px',
+                                  fontWeight: row.isSaved ? '500' : 'normal',
+                                  transition: 'background-color 0.2s ease',
+                                  backgroundColor: rowBgColor,
+                                  position: 'relative'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.backgroundColor = hoverBgColor;
+                                  // Show rejection tooltip for T03 on hover
+                                  if (status === 'T03') {
+                                    const tooltip = e.currentTarget.querySelector('[data-rejection-tooltip]');
+                                    if (tooltip) tooltip.style.display = 'block';
+                                  }
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.backgroundColor = rowBgColor;
+                                  // Hide rejection tooltip for T03
+                                  if (status === 'T03') {
+                                    const tooltip = e.currentTarget.querySelector('[data-rejection-tooltip]');
+                                    if (tooltip) tooltip.style.display = 'none';
+                                  }
+                                }}
                               >
+                                {/* T03 Rejection Message Tooltip */}
+                                {status === 'T03' && (
+                                  <div 
+                                    data-rejection-tooltip
+                                    style={{
+                                      position: 'absolute',
+                                      top: '-40px',
+                                      left: '50%',
+                                      transform: 'translateX(-50%)',
+                                      backgroundColor: '#dc3545',
+                                      color: 'white',
+                                      padding: '8px 12px',
+                                      borderRadius: '4px',
+                                      fontSize: '0.8rem',
+                                      fontWeight: '600',
+                                      whiteSpace: 'nowrap',
+                                      zIndex: 500,
+                                      pointerEvents: 'none',
+                                      display: 'none',
+                                      boxShadow: '0 2px 8px rgba(220, 53, 69, 0.3)',
+                                      textAlign: 'center'
+                                    }}
+                                  >
+                                    ⚠️ Sent for Resubmission - Review and Update
+                                  </div>
+                                )}
                                 {/* ACTION CODE */}
-                                <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.2rem', backgroundColor: '#f8f9fa', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'actionCode' ? '3px solid #dc3545' : 'none', borderRight: '1px solid #dee2e6'}}>
+                                <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.2rem', backgroundColor: '#f8f9fa', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'actionCode' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
                                     {row.isSaved && !row.isEditing ? (
                                       <small>{row.actionName || row.actionCode || '-'}</small>
                                     ) : row.isEditing && row.multipleEntries ? (
-                                      // Multiple entries: Show creatable select
                                       <CreatableSelect
                                         isSearchable
                                         options={(actions[row.objectCode] || [])
@@ -2850,7 +2792,7 @@ const OperationsTargetSettingPage = () => {
                                           });
                                         }}
                                         isClearable={false}
-                                        isDisabled={(row.isSaved && !row.isEditing) || (isT02Status && !isT03Status)}
+                                        isDisabled={row.isSaved && !row.isEditing || isFormSubmitted}
                                         classNamePrefix="react-select"
                                         styles={{
                                           control: (base) => ({
@@ -2942,18 +2884,11 @@ const OperationsTargetSettingPage = () => {
                                 </td>
 
                                 {/* SUCCESS INDICATOR - ALWAYS AVAILABLE DIRECTLY FROM API (NOT DEPENDENT ON ACTION CODE) */}
-                                <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.3rem', width: '20%', backgroundColor: '#f8f9fa', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'successIndicatorCode' ? '3px solid #dc3545' : 'none', borderRight: '1px solid #dee2e6'}}>
+                                <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.3rem', width: '20%', backgroundColor: '#f8f9fa', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'successIndicatorCode' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
                                     {row.isSaved && !row.isEditing ? (
-                                      // SAVED MODE: Show read-only SI name
                                       <small>{row.siName ? row.siName : '-'}</small>
-                                    ) : !row.multipleEntries ? (
-                                      // SINGLE-ENTRY (multipleEntries=false): Show auto-selected SI as text (non-editable)
-                                      <small className={row.successIndicatorCode ? 'text-success fw-bold' : 'text-muted'}>
-                                        {row.siName ? row.siName : (row.successIndicatorCode ? '✅ Auto-selected' : '-')}
-                                      </small>
                                     ) : row.isEditing && row.multipleEntries ? (
-                                      // MULTI-ENTRY EDIT MODE: Show dropdown for SI selection
                                       <select 
                                         className="form-select form-select-sm form-control-modern"
                                         value={row.successIndicatorCode || ''}
@@ -2963,16 +2898,16 @@ const OperationsTargetSettingPage = () => {
                                             handleSIChange(row.id, row.objectCode, row.actionCode, siCode);
                                           }
                                         }}
-                                        disabled={!isCentreLocked() || (row.isSaved && !row.isEditing) || (isT02Status && !isT03Status)}
+                                        disabled={!isCentreLocked() || (row.isSaved && !row.isEditing) || isFormSubmitted}
                                         style={{
                                           fontSize: '0.75rem',
                                           padding: '0.35rem',
                                           borderRadius: '4px',
                                           border: '1px solid #ddd',
-                                          backgroundColor: (row.isSaved && !row.isEditing) || (isT02Status && !isT03Status) ? '#f0f0f0' : '#fff',
+                                          backgroundColor: (row.isSaved && !row.isEditing) || isFormSubmitted ? '#f0f0f0' : '#fff',
                                           boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
-                                          cursor: !isCentreLocked() || (row.isSaved && !row.isEditing) || (isT02Status && !isT03Status) ? 'not-allowed' : 'pointer',
-                                          opacity: (row.isSaved && !row.isEditing) || (isT02Status && !isT03Status) ? 0.6 : 1
+                                          cursor: !isCentreLocked() || (row.isSaved && !row.isEditing) || isFormSubmitted ? 'not-allowed' : 'pointer',
+                                          opacity: (row.isSaved && !row.isEditing) || isFormSubmitted ? 0.6 : 1
                                         }}
                                       >
                                         <option value="">Select Success Indicator</option>
@@ -2983,10 +2918,7 @@ const OperationsTargetSettingPage = () => {
                                         )) || []}
                                       </select>
                                     ) : (
-                                      // DEFAULT: Show SI name or dash
-                                      <small className={row.successIndicatorCode ? 'text-success fw-bold' : 'text-muted'}>
-                                        {row.siName ? row.siName : (row.successIndicatorCode ? '✅ Auto-selected' : '-')}
-                                      </small>
+                                      <small>{row.siName ? row.siName : '-'}</small>
                                     )}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'successIndicatorCode' && (
                                       <div style={{
@@ -3022,22 +2954,21 @@ const OperationsTargetSettingPage = () => {
                                 </td>
 
                                 {/* WEIGHT TYPE */}
-                                <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.3rem', width: '8%', backgroundColor: '#f8f9fa', borderRight: '1px solid #dee2e6'}}>
-                                  {row.isEditing && row.multipleEntries ? (
-                                    // Show dropdown only for multiple-entry objectives in edit mode
+                                <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.3rem', width: '8%', backgroundColor: '#f8f9fa'}}>
+                                  {row.isEditing ? (
                                     <select 
                                       className="form-select form-select-sm form-control-modern"
                                       value={row.selectedWeightType || ''}
                                       onChange={(e) => handleWeightTypeChange(row.id, e.target.value)}
-                                      disabled={row.unitPreferred === 'Fixed' || !isCentreLocked()}
+                                      disabled={row.unitPreferred === 'Fixed' || row.multipleEntries || !isCentreLocked()}
                                       style={{
                                         fontSize: '0.85rem',
                                         padding: '0.45rem',
                                         borderRadius: '4px',
                                         border: '1px solid #ddd',
-                                        backgroundColor: (row.unitPreferred === 'Fixed' || !isCentreLocked()) ? '#f0f0f0' : '#fff',
+                                        backgroundColor: (row.unitPreferred === 'Fixed' || row.multipleEntries || !isCentreLocked()) ? '#f0f0f0' : '#fff',
                                         boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
-                                        cursor: (row.unitPreferred === 'Fixed' || !isCentreLocked()) ? 'not-allowed' : 'pointer',
+                                        cursor: (row.unitPreferred === 'Fixed' || row.multipleEntries || !isCentreLocked()) ? 'not-allowed' : 'pointer',
                                         appearance: 'none',
                                         backgroundImage: 'none',
                                         paddingRight: '0.75rem'
@@ -3049,7 +2980,6 @@ const OperationsTargetSettingPage = () => {
                                       <option value="NUMBER">🔢 Number</option>
                                     </select>
                                   ) : (
-                                    // Display value for single-entry or read-only mode
                                     <small style={{fontWeight: '600', color: '#0066cc'}}>
                                       {row.selectedWeightType === 'DATE' ? '📅 Date' : 
                                        row.selectedWeightType === 'PERCENTAGE' ? '📊 Percentage' : 
@@ -3060,8 +2990,8 @@ const OperationsTargetSettingPage = () => {
                                 </td>
 
                                 {/* WEIGHT VALUE */}
-                                <td colSpan="1" className="text-center" style={{verticalAlign: 'middle', padding: '0.3rem', backgroundColor: '#f8f9fa', borderRight: '1px solid #dee2e6'}}>
-                                  <small className={!row.multipleEntries && row.weightValue && row.successIndicatorCode ? 'text-success fw-bold' : 'text-muted'}>
+                                <td colSpan="1" className="text-center" style={{verticalAlign: 'middle', padding: '0.3rem', backgroundColor: '#f8f9fa'}}>
+                                  <small className="text-muted">
                                     {row.weightValue ? (
                                       <>
                                         <strong>{row.weightValue.value || row.weightValue}</strong>
@@ -3074,7 +3004,7 @@ const OperationsTargetSettingPage = () => {
                                 </td>
 
                                 {/* EXCELLENT INPUT */}
-                                <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'excellent' ? '3px solid #dc3545' : 'none', borderRight: '1px solid #0066cc'}}>
+                                <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'excellent' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
                                     {renderWeightInput(row, 'excellent')}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'excellent' && (
@@ -3111,7 +3041,7 @@ const OperationsTargetSettingPage = () => {
                                 </td>
 
                                 {/* VERY GOOD INPUT */}
-                                <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'veryGood' ? '3px solid #dc3545' : 'none', borderRight: '1px solid #0066cc'}}>
+                                <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'veryGood' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
                                     {renderWeightInput(row, 'veryGood')}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'veryGood' && (
@@ -3148,7 +3078,7 @@ const OperationsTargetSettingPage = () => {
                                 </td>
 
                                 {/* GOOD INPUT */}
-                                <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'good' ? '3px solid #dc3545' : 'none', borderRight: '1px solid #0066cc'}}>
+                                <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'good' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
                                     {renderWeightInput(row, 'good')}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'good' && (
@@ -3185,7 +3115,7 @@ const OperationsTargetSettingPage = () => {
                                 </td>
 
                                 {/* FAIR INPUT */}
-                                <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'fair' ? '3px solid #dc3545' : 'none', borderRight: '1px solid #0066cc'}}>
+                                <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'fair' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
                                     {renderWeightInput(row, 'fair')}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'fair' && (
@@ -3222,7 +3152,7 @@ const OperationsTargetSettingPage = () => {
                                 </td>
 
                                 {/* POOR INPUT */}
-                                <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'poor' ? '3px solid #dc3545' : 'none', borderRight: '1px solid #0066cc'}}>
+                                <td colSpan="1" style={{fontSize: '0.75rem', padding: '0.2rem', verticalAlign: 'middle', backgroundColor: '#e7f3ff', borderTop: tooltipError?.rowId === row.id && tooltipError?.field === 'poor' ? '3px solid #dc3545' : 'none'}}>
                                   <div style={{position: 'relative'}}>
                                     {renderWeightInput(row, 'poor')}
                                     {tooltipError?.rowId === row.id && tooltipError?.field === 'poor' && (
@@ -3259,66 +3189,113 @@ const OperationsTargetSettingPage = () => {
                                 </td>
 
                                 {/* SINGLE ACTIONS COLUMN: ALL 4 BUTTONS (SAVE, ADD, EDIT, DELETE) */}
-                                <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.25rem', backgroundColor: '#f0f8ff', minWidth: '180px', borderRight: '1px solid #0066cc'}}>
-                                  <div style={{display: 'flex', gap: '0.2rem', justifyContent: 'center', alignItems: 'center', flexWrap: 'nowrap', width: '100%', overflow: 'hidden'}}>
-                                    <>
-                                      {/* SAVE BUTTON */}
-                                        <button 
-                                          className="btn btn-sm"
-                                          onClick={() => saveRow(row)}
-                                          disabled={!row.isEditing || loading || (isT02Status && !isT03Status)}
-                                          title={isT02Status && !isT03Status ? "Cannot edit - T02 status (submitted)" : "Save changes"}
-                                          style={{
-                                            fontSize: '0.65rem',
-                                            padding: '0.25rem 0.35rem',
-                                            minWidth: '24px',
-                                            flex: '0 0 auto',
-                                            backgroundColor: row.isEditing && row.statuscode !== 'T02' ? '#28a745' : '#e9ecef',
-                                            border: 'none',
-                                            color: row.isEditing && row.statuscode !== 'T02' ? 'white' : '#999',
-                                            borderRadius: '4px',
-                                            cursor: row.isEditing && row.statuscode !== 'T02' ? 'pointer' : 'not-allowed',
-                                            transition: 'all 0.2s ease',
-                                            fontWeight: '600'
-                                          }}
-                                          onMouseEnter={(e) => {
-                                            if (row.isEditing && !(isT02Status && !isT03Status)) {
-                                              e.currentTarget.style.backgroundColor = '#20c997';
-                                              e.currentTarget.style.boxShadow = '0 2px 6px rgba(40, 167, 69, 0.3)';
-                                            }
-                                          }}
-                                          onMouseLeave={(e) => {
-                                            e.currentTarget.style.backgroundColor = row.isEditing && !(isT02Status && !isT03Status) ? '#28a745' : '#e9ecef';
-                                            e.currentTarget.style.boxShadow = 'none';
-                                          }}
-                                        >
-                                          {loading ? (
-                                            <Loader size={10} className="spinner-border spinner-border-sm" />
-                                          ) : (
-                                            <CheckCircle size={11} />
-                                          )}
-                                        </button>
+                                <td colSpan="1" style={{verticalAlign: 'middle', padding: '0.25rem', backgroundColor: '#f0f8ff', minWidth: '180px'}} title={status === 'T03' && row.approvalRemarks ? `📋 ${row.approvalRemarks}` : ''}>
+                                  <div style={{display: 'flex', gap: '0.2rem', justifyContent: 'center', alignItems: 'center', flexWrap: 'nowrap', width: '100%', overflow: 'hidden', position: 'relative'}}>
+                                    {/* SAVE BUTTON - For T01 status */}
+                                    {status !== 'T03' && (
+                                      <button 
+                                        className="btn btn-sm"
+                                        onClick={() => saveRow(row)}
+                                        disabled={!row.isEditing || loading}
+                                        title="Save changes"
+                                        style={{
+                                          fontSize: '0.65rem',
+                                          padding: '0.25rem 0.35rem',
+                                          minWidth: '24px',
+                                          flex: '0 0 auto',
+                                          backgroundColor: row.isEditing ? '#28a745' : '#e9ecef',
+                                          border: 'none',
+                                          color: row.isEditing ? 'white' : '#999',
+                                          borderRadius: '4px',
+                                          cursor: row.isEditing ? 'pointer' : 'not-allowed',
+                                          transition: 'all 0.2s ease',
+                                          fontWeight: '600'
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          if (row.isEditing) {
+                                            e.currentTarget.style.backgroundColor = '#20c997';
+                                            e.currentTarget.style.boxShadow = '0 2px 6px rgba(40, 167, 69, 0.3)';
+                                          }
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          e.currentTarget.style.backgroundColor = row.isEditing ? '#28a745' : '#e9ecef';
+                                          e.currentTarget.style.boxShadow = 'none';
+                                        }}
+                                      >
+                                        {loading ? (
+                                          <Loader size={10} className="spinner-border spinner-border-sm" />
+                                        ) : (
+                                          <CheckCircle size={11} />
+                                        )}
+                                      </button>
+                                    )}
+
+                                    {/* RE-SUBMIT BUTTON - Only for T03 status (Rejected rows) */}
+                                    {/* Initially disabled, enables when row is edited and has changes */}
+                                    {status === 'T03' && (
+                                      <button 
+                                        className="btn btn-sm"
+                                        onClick={() => resubmitRejectedRow(row)}
+                                        disabled={!row.isEditing || !row.hasChanges || loading}
+                                        title={!row.isEditing ? "Click Edit to modify this entry" : !row.hasChanges ? "Make changes to enable resubmit" : "Resubmit for approval"}
+                                        style={{
+                                          fontSize: '0.65rem',
+                                          padding: '0.25rem 0.35rem',
+                                          minWidth: '24px',
+                                          flex: '0 0 auto',
+                                          backgroundColor: (row.isEditing && row.hasChanges && !loading) ? '#ff6600' : '#e9ecef',
+                                          border: 'none',
+                                          color: (row.isEditing && row.hasChanges && !loading) ? 'white' : '#999',
+                                          borderRadius: '4px',
+                                          cursor: (row.isEditing && row.hasChanges && !loading) ? 'pointer' : 'not-allowed',
+                                          transition: 'all 0.2s ease',
+                                          fontWeight: '600',
+                                          boxShadow: (row.isEditing && row.hasChanges && !loading) ? '0 2px 4px rgba(255, 102, 0, 0.3)' : 'none',
+                                          opacity: (!row.isEditing || !row.hasChanges) ? 0.6 : 1
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          if (row.isEditing && row.hasChanges && !loading) {
+                                            e.currentTarget.style.backgroundColor = '#ff5500';
+                                            e.currentTarget.style.boxShadow = '0 4px 8px rgba(255, 102, 0, 0.5)';
+                                            e.currentTarget.style.transform = 'translateY(-1px)';
+                                          }
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          if (row.isEditing && row.hasChanges && !loading) {
+                                            e.currentTarget.style.backgroundColor = '#ff6600';
+                                            e.currentTarget.style.boxShadow = '0 2px 4px rgba(255, 102, 0, 0.3)';
+                                            e.currentTarget.style.transform = 'translateY(0)';
+                                          }
+                                        }}
+                                      >
+                                        {loading ? (
+                                          <Loader size={10} className="spinner-border spinner-border-sm" />
+                                        ) : (
+                                          <UploadCloud size={11} />
+                                        )}
+                                      </button>
+                                    )}
                                     
                                     {/* ADD ENTRY BUTTON - Only show after row is saved - HIGHLIGHTED */}
                                     {row.multipleEntries && row.isSaved && getLastRowForObjective(row.objectCode)?.id === row.id && (
                                       <button 
                                         className="btn btn-sm"
                                         onClick={() => addNewEntryForObjective(row.objectCode)}
-                                        disabled={loading || (isT02Status && !isT03Status)}
-                                        title={isT02Status && !isT03Status ? "Cannot add - T02 status (submitted)" : "Add new entry"}
+                                        disabled={loading || isFormSubmitted}
+                                        title={isFormSubmitted ? "Form is locked - Cannot add entries" : "Add new entry"}
                                         style={{
                                           fontSize: '0.65rem',
                                           padding: '0.25rem 0.4rem',
                                           minWidth: '28px',
                                           flex: '0 0 auto',
                                           fontWeight: '700',
-                                          background: isT02Status ? '#ccc' : 'linear-gradient(135deg, #28a745 0%, #20c997 100%)',
-                                          color: isT02Status ? '#666' : 'white',
+                                          background: isFormSubmitted ? '#ccc' : 'linear-gradient(135deg, #28a745 0%, #20c997 100%)',
+                                          color: isFormSubmitted ? '#666' : 'white',
                                           border: 'none',
                                           borderRadius: '5px',
-                                          boxShadow: isT02Status ? 'none' : '0 2px 8px rgba(40, 167, 69, 0.4)',
-                                          animation: isT02Status ? 'none' : 'pulse 2s infinite',
-                                          cursor: isT02Status ? 'not-allowed' : 'pointer',
+                                          boxShadow: isFormSubmitted ? 'none' : '0 2px 8px rgba(40, 167, 69, 0.4)',
+                                          animation: isFormSubmitted ? 'none' : 'pulse 2s infinite',
+                                          cursor: isFormSubmitted ? 'not-allowed' : 'pointer',
                                           borderRadius: '4px',
                                           transition: 'all 0.2s ease'
                                         }}
@@ -3339,30 +3316,39 @@ const OperationsTargetSettingPage = () => {
                                     <button 
                                       className="btn btn-sm"
                                       onClick={() => requestEditRow(row.id)}
-                                      disabled={!row.isSaved || row.isEditing || loading || (isT02Status && !isT03Status)}
-                                      title={isT02Status && !isT03Status ? "Cannot edit - T02 status (submitted)" : "Edit this entry"}
+                                      disabled={!row.isSaved || row.isEditing || loading || areButtonsDisabled(status)}
+                                      title={areButtonsDisabled(status) ? `Cannot edit - ${getRowStatusInfo(status).description}` : "Edit this entry"}
                                       style={{
                                         fontSize: '0.65rem',
                                         padding: '0.25rem 0.35rem',
                                         minWidth: '24px',
                                         flex: '0 0 auto',
-                                        backgroundColor: row.isSaved && !row.isEditing && !(isT02Status && !isT03Status) ? '#0066cc' : '#e9ecef',
-                                        color: row.isSaved && !row.isEditing && !(isT02Status && !isT03Status) ? 'white' : '#999',
+                                        backgroundColor: row.isSaved && !row.isEditing && !areButtonsDisabled(status) ? '#0066cc' : '#e9ecef',
+                                        color: row.isSaved && !row.isEditing && !areButtonsDisabled(status) ? 'white' : '#999',
                                         border: 'none',
                                         borderRadius: '4px',
-                                        cursor: row.isSaved && !row.isEditing ? 'pointer' : 'not-allowed',
+                                        cursor: row.isSaved && !row.isEditing && !areButtonsDisabled(status) ? 'pointer' : 'not-allowed',
                                         transition: 'all 0.2s ease',
-                                        fontWeight: '600'
+                                        fontWeight: '600',
+                                        opacity: areButtonsDisabled(status) ? 0.6 : 1
                                       }}
                                       onMouseEnter={(e) => {
-                                        if (row.isSaved && !row.isEditing) {
+                                        if (row.isSaved && !row.isEditing && !areButtonsDisabled(status)) {
                                           e.currentTarget.style.backgroundColor = '#004da3';
                                           e.currentTarget.style.boxShadow = '0 2px 6px rgba(0, 102, 204, 0.3)';
+                                          if (status === 'T03' && row.approvalRemarks) {
+                                            const tooltip = e.currentTarget.parentElement.querySelector('.rejection-tooltip');
+                                            if (tooltip) tooltip.style.opacity = '1';
+                                          }
                                         }
                                       }}
                                       onMouseLeave={(e) => {
-                                        e.currentTarget.style.backgroundColor = row.isSaved && !row.isEditing ? '#0066cc' : '#e9ecef';
+                                        e.currentTarget.style.backgroundColor = row.isSaved && !row.isEditing && !areButtonsDisabled(status) ? '#0066cc' : '#e9ecef';
                                         e.currentTarget.style.boxShadow = 'none';
+                                        if (status === 'T03' && row.approvalRemarks) {
+                                          const tooltip = e.currentTarget.parentElement.querySelector('.rejection-tooltip');
+                                          if (tooltip) tooltip.style.opacity = '0';
+                                        }
                                       }}
                                     >
                                       <Edit size={10} />
@@ -3373,36 +3359,36 @@ const OperationsTargetSettingPage = () => {
                                       <button 
                                         className="btn btn-sm"
                                         onClick={() => requestDeleteRow(row.id)}
-                                        disabled={!row.isSaved || row.hasChanges || loading || (isT02Status && !isT03Status)}
-                                        title={isT02Status && !isT03Status ? "Cannot delete - T02 status (submitted)" : "Delete this entry"}
+                                        disabled={!row.isSaved || row.hasChanges || loading || areButtonsDisabled(status)}
+                                        title={areButtonsDisabled(status) ? `Cannot delete - ${getRowStatusInfo(status).description}` : "Delete this entry"}
                                         style={{
                                           fontSize: '0.65rem',
                                           padding: '0.25rem 0.35rem',
                                           minWidth: '24px',
                                           flex: '0 0 auto',
-                                          backgroundColor: row.isSaved && !row.hasChanges && !(isT02Status && !isT03Status) ? '#dc3545' : '#e9ecef',
-                                          color: row.isSaved && !row.hasChanges && !(isT02Status && !isT03Status) ? 'white' : '#999',
+                                          backgroundColor: row.isSaved && !row.hasChanges && !areButtonsDisabled(status) ? '#dc3545' : '#e9ecef',
+                                          color: row.isSaved && !row.hasChanges && !areButtonsDisabled(status) ? 'white' : '#999',
                                           border: 'none',
                                           borderRadius: '4px',
-                                          cursor: row.isSaved && !row.hasChanges && !(isT02Status && !isT03Status) ? 'pointer' : 'not-allowed',
+                                          cursor: row.isSaved && !row.hasChanges && !areButtonsDisabled(status) ? 'pointer' : 'not-allowed',
                                           transition: 'all 0.2s ease',
-                                          fontWeight: '600'
+                                          fontWeight: '600',
+                                          opacity: areButtonsDisabled(status) ? 0.6 : 1
                                         }}
                                         onMouseEnter={(e) => {
-                                          if (row.isSaved && !row.hasChanges) {
+                                          if (row.isSaved && !row.hasChanges && !areButtonsDisabled(status)) {
                                             e.currentTarget.style.backgroundColor = '#c82333';
                                             e.currentTarget.style.boxShadow = '0 2px 6px rgba(220, 53, 69, 0.3)';
                                           }
                                         }}
                                         onMouseLeave={(e) => {
-                                          e.currentTarget.style.backgroundColor = row.isSaved && !row.hasChanges ? '#dc3545' : '#e9ecef';
+                                          e.currentTarget.style.backgroundColor = row.isSaved && !row.hasChanges && !areButtonsDisabled(status) ? '#dc3545' : '#e9ecef';
                                           e.currentTarget.style.boxShadow = 'none';
                                         }}
                                       >
                                         <Trash2 size={10} />
                                       </button>
                                     )}
-                                    </>
                                   </div>
                                 </td>
                               </tr>

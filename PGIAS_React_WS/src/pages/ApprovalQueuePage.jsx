@@ -402,6 +402,16 @@ const ApprovalQueuePage = () => {
     return rows.filter(r => r.objectCode === objectCode);
   };
 
+  // Calculate total weight for an objective (sum of weightperunitofactivity for all rows)
+  const calculateTotalWeightForObjective = (objectCode) => {
+    const objectiveRows = getObjectiveRows(objectCode);
+    if (objectiveRows.length === 0) return 0;
+    const total = objectiveRows.reduce((sum, row) => {
+      return sum + (parseFloat(row.weightperunitofactivity) || 0);
+    }, 0);
+    return total.toFixed(2);
+  };
+
   return (
     <>
       {/* Role-based access control */}
@@ -539,17 +549,33 @@ const ApprovalQueuePage = () => {
                 borderBottom: '2px solid #0066cc',
                 display: 'flex',
                 justifyContent: 'space-between',
-                alignItems: 'center'
+                alignItems: 'center',
+                transition: 'all 0.2s ease'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = '#e6eef7';
+                e.currentTarget.style.boxShadow = 'inset 0 1px 3px rgba(0, 0, 0, 0.05)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'transparent';
+                e.currentTarget.style.boxShadow = 'none';
               }}
             >
-              <div>
-                <h5 className="mb-1 fw-bold" style={{color: '#0066cc', fontSize: '1rem'}}>
+              <div style={{flex: 1}}>
+                <h5 className="mb-2 fw-bold" style={{color: '#0066cc', fontSize: '1rem'}}>
                   {objective.objectivecode} - {objective.objectivedescription}
                 </h5>
                 <small className="text-muted">{objectiveRows.length} entry(ies) pending approval</small>
               </div>
-              <div style={{color: '#0066cc', fontSize: '1.2rem'}}>
-                {expandedObjectives[objective.objectivecode] ? '⬆️' : '⬇️'}
+              <div style={{display: 'flex', alignItems: 'center', gap: '1.5rem'}}>
+                <div style={{textAlign: 'right'}}>
+                  <small style={{color: '#ff6600', fontWeight: '700', fontSize: '0.95rem'}}>
+                    ⚖️ Total Weight: {calculateTotalWeightForObjective(objective.objectivecode)}
+                  </small>
+                </div>
+                <div style={{color: '#0066cc', fontSize: '1.3rem', minWidth: '24px', textAlign: 'center'}}>
+                  {expandedObjectives[objective.objectivecode] ? '⬆️' : '⬇️'}
+                </div>
               </div>
             </div>
 
@@ -563,14 +589,14 @@ const ApprovalQueuePage = () => {
                         borderBottom: '3px solid #0066cc',
                         boxShadow: '0 2px 6px rgba(0, 102, 204, 0.1)'
                       }}>
-                        <th width="16%" style={{
-                          textAlign: 'center',
+                        <th width="18%" style={{
+                          textAlign: 'left',
                           fontSize: '0.8rem',
                           fontWeight: '700',
                           padding: '0.75rem 0.5rem',
                           color: '#0066cc',
                           letterSpacing: '0.5px'
-                        }}>📋 Action Code</th>
+                        }}>📝 Action</th>
                         <th width="14%" style={{
                           textAlign: 'center',
                           fontSize: '0.8rem',
@@ -579,6 +605,24 @@ const ApprovalQueuePage = () => {
                           color: '#0066cc',
                           letterSpacing: '0.5px'
                         }}>🎯 Success Indicator</th>
+                        <th width="7%" style={{
+                          textAlign: 'center',
+                          fontSize: '0.75rem',
+                          fontWeight: '700',
+                          padding: '0.5rem 0.3rem',
+                          backgroundColor: '#fff3cd',
+                          color: '#856404',
+                          letterSpacing: '0.5px'
+                        }}>⚖️ Weight</th>
+                        <th width="8%" style={{
+                          textAlign: 'center',
+                          fontSize: '0.75rem',
+                          fontWeight: '700',
+                          padding: '0.5rem 0.3rem',
+                          backgroundColor: '#fff3cd',
+                          color: '#856404',
+                          letterSpacing: '0.5px'
+                        }}>📌 Type</th>
                         <th width="7%" style={{
                           textAlign: 'center',
                           fontSize: '0.75rem',
@@ -624,14 +668,6 @@ const ApprovalQueuePage = () => {
                           color: '#004db3',
                           letterSpacing: '0.5px'
                         }}>📉 Poor</th>
-                        <th width="10%" style={{
-                          textAlign: 'center',
-                          fontSize: '0.8rem',
-                          fontWeight: '700',
-                          padding: '0.75rem 0.5rem',
-                          color: '#0066cc',
-                          letterSpacing: '0.5px'
-                        }}>📊 Status</th>
                         <th width="8%" style={{
                           textAlign: 'center',
                           fontSize: '0.8rem',
@@ -639,7 +675,7 @@ const ApprovalQueuePage = () => {
                           padding: '0.75rem 0.5rem',
                           color: '#0066cc',
                           letterSpacing: '0.5px'
-                        }}>📅 Approval Date</th>
+                        }}>📊 Status</th>
                         <th width="15%" style={{
                           textAlign: 'center',
                           fontSize: '0.8rem',
@@ -660,26 +696,32 @@ const ApprovalQueuePage = () => {
                         onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#eff6ff'}
                         onMouseLeave={(e) => e.currentTarget.style.backgroundColor = rowIdx % 2 === 0 ? '#ffffff' : '#f9fafb'}
                         >
-                          <td style={{fontSize: '0.75rem', fontWeight: '600', color: '#0066cc', padding: '0.5rem 0.3rem', textAlign: 'center'}}>
-                            {row.actionCode}
+                          <td style={{fontSize: '0.75rem', fontWeight: '600', color: '#0066cc', padding: '0.5rem 0.3rem', textAlign: 'left'}}>
+                            {row.actionName}
                           </td>
                           <td style={{fontSize: '0.75rem', padding: '0.5rem 0.3rem', textAlign: 'center'}}>
                             <small>{row.siName}</small>
                           </td>
+                          <td style={{fontSize: '0.75rem', padding: '0.5rem 0.3rem', textAlign: 'center', fontWeight: '600', color: '#0066cc'}}>
+                            {row.weightperunitofactivity || '-'}
+                          </td>
+                          <td style={{fontSize: '0.75rem', padding: '0.5rem 0.3rem', textAlign: 'center', fontWeight: '500', color: '#856404'}}>
+                            {row.selectedWeightType === 'NUMBER' ? 'NUMBER' : row.selectedWeightType === 'PERCENTAGE' ? 'PERCENTAGE' : row.selectedWeightType === 'DATE' ? 'DATE' : 'NUMBER'}
+                          </td>
                           <td style={{fontSize: '0.75rem', padding: '0.5rem 0.3rem', textAlign: 'center', fontWeight: '600'}}>
-                            {formatDateToDDMMYYYY(row.excellent)}
+                            {row.selectedWeightType === 'DATE' ? formatDateToDDMMYYYY(row.excellent) : row.excellent || '-'}
                           </td>
                           <td style={{fontSize: '0.75rem', padding: '0.5rem 0.3rem', textAlign: 'center'}}>
-                            {row.veryGood ? formatDateToDDMMYYYY(row.veryGood) : '-'}
+                            {row.selectedWeightType === 'DATE' ? formatDateToDDMMYYYY(row.veryGood) : row.veryGood || '-'}
                           </td>
                           <td style={{fontSize: '0.75rem', padding: '0.5rem 0.3rem', textAlign: 'center'}}>
-                            {row.good ? formatDateToDDMMYYYY(row.good) : '-'}
+                            {row.selectedWeightType === 'DATE' ? formatDateToDDMMYYYY(row.good) : row.good || '-'}
                           </td>
                           <td style={{fontSize: '0.75rem', padding: '0.5rem 0.3rem', textAlign: 'center'}}>
-                            {row.fair ? formatDateToDDMMYYYY(row.fair) : '-'}
+                            {row.selectedWeightType === 'DATE' ? formatDateToDDMMYYYY(row.fair) : row.fair || '-'}
                           </td>
                           <td style={{fontSize: '0.75rem', padding: '0.5rem 0.3rem', textAlign: 'center'}}>
-                            {row.poor ? formatDateToDDMMYYYY(row.poor) : '-'}
+                            {row.selectedWeightType === 'DATE' ? formatDateToDDMMYYYY(row.poor) : row.poor || '-'}
                           </td>
                           <td style={{fontSize: '0.75rem', padding: '0.5rem 0.3rem', textAlign: 'center'}}>
                             <div style={{
@@ -696,11 +738,6 @@ const ApprovalQueuePage = () => {
                             }}>
                               {row.statuscode === 'T04' ? '✅ APPR' : row.statuscode === 'T03' ? '❌ REJ' : '⏳ PND'}
                             </div>
-                          </td>
-                          <td style={{fontSize: '0.75rem', padding: '0.5rem 0.3rem', textAlign: 'center'}}>
-                            <small style={{color: '#0066cc', fontWeight: '500'}}>
-                              {row.approvedAt ? formatDateToDDMMYYYY(row.approvedAt) : '-'}
-                            </small>
                           </td>
                           <td style={{fontSize: '0.75rem', padding: '0.5rem 0.3rem', textAlign: 'center'}}>
                             <div style={{display: 'flex', gap: '0.3rem', justifyContent: 'center'}}>
